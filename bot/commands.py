@@ -1,6 +1,5 @@
 import asyncio
 from api.account import fn_kt00004, fn_kt00002
-from api.ranking import fn_ka10023
 from util.market_hour import MarketHour
 from util.get_setting import get_setting, update_setting
 from util.tel_send import tel_send
@@ -17,64 +16,52 @@ class BotCommandsMixin:
 					return False
 
 			phase = MarketHour.get_market_phase()
-			msg   = f"👀 [선정 종목] ({self._phase_name(phase)})\n\n"
+			msg   = f"👀 [MOMENTUM 선정 종목]\n\n"
 
 			if not self.selected_stocks:
 				msg += "   아직 종목이 선정되지 않았습니다.\n"
 				tel_send(msg)
 				return True
 
-			try:
-				ranked_stocks = await asyncio.wait_for(
-					asyncio.get_event_loop().run_in_executor(None, fn_ka10023, len(self.selected_stocks) + 20, 'N', '', self.token),
-					timeout=10.0
-				)
-				info_map = {}
-				if ranked_stocks:
-					for stock in ranked_stocks:
-						stk_cd = stock.get('stk_cd', '')
-						if stk_cd in self.selected_stocks:
-							info_map[stk_cd] = stock
+			for stk_cd in self.selected_stocks:
+				nm   = self.selected_stocks_names.get(stk_cd, stk_cd)
+				meta = self.selected_stocks_meta.get(stk_cd, {})
+				
+				flu_rt    = meta.get('flu_rt', 0)
+				score     = meta.get('score', 0)
+				is_foreign = meta.get('is_foreign', False)
+				trde_amt  = meta.get('trde_amt', None)
+				trde_amt_rank = meta.get('trde_amt_rank', None)
+				
+				try:
+					emoji = "🔴" if flu_rt > 0 else ("🔵" if flu_rt < 0 else "➡️")
+				except:
+					emoji = "➡️"
+				
+				foreign_tag = "🌏" if is_foreign else "📍"
+				trde_info = f"{trde_amt:.0f}백만 (순위{trde_amt_rank})" if trde_amt and trde_amt_rank else "N/A"
+				
+				msg += f"{emoji} [{nm}] ({stk_cd}) {foreign_tag}\n"
+				msg += f"   등락률: {flu_rt:+.2f}% | 점수: {score:.3f} | 거래대금: {trde_info}\n\n"
 
-				for stk_cd in self.selected_stocks:
-					if stk_cd in info_map:
-						si       = info_map[stk_cd]
-						nm       = si.get('stk_nm', stk_cd)
-						flu_rt   = si.get('flu_rt', 0)
-						sdnin_rt = si.get('sdnin_rt', 0)
-						try:
-							flu_val = float(flu_rt)
-							emoji   = "🔴" if flu_val > 0 else ("🔵" if flu_val < 0 else "➡️")
-						except:
-							emoji = "➡️"
-						msg += f"{emoji} [{nm}] ({stk_cd})\n"
-						msg += f"   거래량급증률: {sdnin_rt:.0f}%  |  등락률: {flu_rt:+.2f}%\n\n"
-					else:
-						nm = self.selected_stocks_names.get(stk_cd, stk_cd)
-						msg += f"➡️ [{nm}] ({stk_cd})\n\n"
+			msg += f"📋 총 {len(self.selected_stocks)}개 선정\n"
 
-				msg += f"📋 총 {len(self.selected_stocks)}개 선정"
-
-				# ── ORB 후보 ──────────────────────────────
-				orb_list = getattr(self, 'orb_candidates', [])
-				if orb_list:
-					msg += f"\n\n📌 [ORB 후보] ({len(orb_list)}종목, 09:01 1회 고정)\n"
-					for c in orb_list:
-						trde     = c.get('trde_prica', 0)
-						trde_str = f"{trde/10000:.0f}억" if trde >= 10000 else f"{trde:.0f}백만"
-						gap_str  = f"{c['gap']:+.1f}%" if c.get('gap') is not None else "N/A"
-						msg += (
-							f"   {c['stk_nm']}({c['stk_cd']}) "
-							f"갭={gap_str} | 등락={c['flu_rt']:+.1f}% | "
-							f"거래대금={trde_str}\n"
-						)
-				else:
-					msg += "\n\n📌 [ORB 후보] 없음 (미선정)"
-
-			except asyncio.TimeoutError:
-				msg += f"⏰ 종목 정보 조회 시간 초과\n   코드: {', '.join(self.selected_stocks)}"
-			except Exception as e:
-				msg += f"⚠️ 조회 실패: {e}\n   코드: {', '.join(self.selected_stocks)}"
+			# ── ORB 후보 ──────────────────────────────
+			orb_list = getattr(self, 'orb_candidates', [])
+			if orb_list:
+				msg += f"\n📌 [ORB 후보] ({len(orb_list)}종목)\n"
+				for c in orb_list:
+					trde     = c.get('trde_prica', 0)
+					trde_str = f"{trde/10000:.0f}억" if trde >= 10000 else f"{trde:.0f}백만"
+					gap_str  = f"{c['gap']:+.1f}%" if c.get('gap') is not None else "N/A"
+					score_str = f"{c['score']:.3f}" if c.get('score') is not None else "N/A"
+					msg += (
+						f"   {c['stk_nm']}({c['stk_cd']}) "
+						f"갭={gap_str} | 등락={c['flu_rt']:+.1f}% | "
+						f"점수={score_str} | 거래대금={trde_str}\n"
+					)
+			else:
+				msg += f"\n📌 [ORB 후보] 없음 (미선정)"
 
 			tel_send(msg)
 			return True
@@ -323,73 +310,61 @@ class BotCommandsMixin:
 			help_message = f"""🤖 [PaperTrading v2 명령어 가이드]
 
 [기본 명령어]
-• start  - 매매 시작 (장 외 시간이면 다음 장 시작 시 자동 실행)
-• stop   - 매매 중지 (보유 포지션은 유지)
-• r      - 보유 종목 수익률 조회
-• s      - 현재 선정 감시 종목 조회
-• b      - 계좌 자산 현황 (예탁자산·예수금·주식평가액)
-• help   - 이 도움말 표시
+• start   - 매매 시작 (장 외 시간이면 다음 장 시작 시 자동 실행)
+• stop    - 매매 중지 (보유 포지션은 유지)
+• sel (s) - 현재 선정 종목 조회 (MOMENTUM + ORB 후보)
+• report (r) - 보유 종목 수익률 조회
+• bal (b) - 계좌 자산 현황 (예탁자산·예수금·주식평가액)
+• help    - 이 도움말 표시
 
 [설정 명령어] (현재값)
-• top {{n}}      - 선정 종목 수 설정 (현재: {top_n}개)  예) top 5
-• slr {{n}}      - 고정 손절 기준 설정 (현재: {slr}%)   예) slr 3 → -3%
-• tsg {{n}}      - 트레일링 스탑 gap (현재: {tsg}%)    예) tsg 3.5
-• brt {{n}}      - 1회 매수 비율 설정 (현재: {brt}%)   예) brt 10
+• top {{n}}      - 선정 종목 수 설정 (현재: {top_n}개)          예) top 5
+• slr {{n}}      - 고정 손절 기준 설정 (현재: {slr}%)           예) slr 3 → -3%
+• tsg {{n}}      - 트레일링 스탑 gap (현재: {tsg}%)            예) tsg 3.5
+• brt {{n}}      - 1회 매수 비율 설정 (현재: {brt}%)           예) brt 10
 • chart {{x}} {{y}} - MA 설정 (현재: MA{chart_short}/MA{chart_long})  예) chart 5 20
-  ※ y(장기)는 x(단기)보다 커야 합니다
 
 [종목 선정 방식]
-■ ORB 풀 (early 구간 한정: 09:01 1차 + 09:03 2차 갱신, 이후 고정)
-  거래대금 상위 50(메인) + 거래량급증 50(sdnin_rt 확보)
-  하드 필터: 갭 ≤ 0% 제외 / 현재가 < 시가×0.98 제외
-  소프트 패널티: 갭 1.5~8% 이탈(-0.2) / 윗꼬리>5%(-0.2) / 음봉≥2개(-0.2)
-  스코어: 거래량급증 40% + 등락률 35% + 거래대금 25% - 패널티
-  상위 15종목 / 5종목 미만 시 거래대금 상위로 보충 / ETF·ETN·스팩 제외
 
-■ 모멘텀 풀 (ORB와 완전 분리, 점수 기반 선택적 교체)
-  장 초반 (09:00~09:45): 거래대금 상위 Top30 / 2분 갱신
-    필터: 거래대금 ≥ 700억 + 등락률 ≥ -1.5% / 차트: 현재가 > 시가×0.99
-  장 중반 (09:45~14:40): 거래량급증 Top30 + 외인기관 보너스 / 5분 갱신
-    필터: 등락률 ≥ 0.3% + 거래량급증 ≥ 120% / MA20 필터 없음
-  장 후반 (14:40~15:30): 중반 동일 / 5분 갱신
-    필터: 등락률 ≥ 0.3% + 거래량급증 ≥ 120% / MA20 위 종목만
-  ※ 갱신 시 점수 비교 후 선택적 교체 (기존 종목 한 사이클 버팀)
+■ ORB 전략 풀 (09:01 1차 + 09:03 2차 갱신 후 고정)
+  API: ka10032(거래대금 상위 30) + ka10030(거래량 상위 30) 병합
+  필터: 갭상승(시가>전일종가) / 갭 ≤ 0% 제외 / 현재가 < 시가×0.98 제외
+  소프트 패널티: 갭 1.5~8% 이탈 / 윗꼬리 > 5% / 음봉 2개 이상
+  스코어: 거래대금*0.25 + 거래량*0.30 + 예상체결*0.25 + 등락률*0.10 - 패널티
+  상위 15종목 선정 / 미만 시 거래대금 순으로 5종목 보충 / ETF·ETN·스팩 제외
+
+■ MOMENTUM 전략 풀 (5분 주기 갱신, 점수 기반 선택적 교체)
+  API: ka10030(거래량 상위 30) → 기관/외인(ka90009) 조회 추가
+  1차 필터: 등락률 ≥ 0.3% + 거래대금 ≥ 10억
+  2차 필터: 과열 제외(등락률 > 23%)
+  스코어: 거래대금*0.35 + 등락률*0.30 + RSI*0.20 + 외인*0.15
+  Fallback: 차트 미통과 시 거래대금*0.60 + 등락률*0.40
+  상위 {top_n}개 선정 / 기존 종목과 점수 비교 후 교체 여부 결정
 
 [매매 전략]
-■ ORB 전략 (early 구간 09:05~ 한정, orb_candidates 전용)
-  진입: ORB 고점(09:00~09:04 5봉 최고가) 돌파 확인(3초 유지)
-        갭상승 필수 / 거래량 > 직전봉×1.5 / RSI 50~75
-        추격방지: 돌파 기준 +1% 초과 시 금지 / 최대 5회
-  손절: max(ORB 저점%, -2%) 기준 이탈 시 매도
-  트레일링 (4단계):
-    peak < 2%  → gap 1.2% / peak < 4%  → gap 1.5%
-    peak < 7%  → gap 2.0% / peak ≥ 7%  → gap 2.5%
-  수익반납방지: peak ≥ 1.5% 후 수익률 0% 미만 시 즉시 매도
 
-■ 모멘텀 전략
-  공통 진입 조건:
-    돌파 확인: 직전 N봉 고점 돌파 후 N초 유지 확인 후 매수
-    추격방지: 초반 +2% / 중반·후반 +1.5% 초과 금지
-    과열 종목(등락률 > 20%) 진입 금지
-    쿨다운: 매도 후 20분간 동일 종목 재매수 금지
-  공통 청산: 데드크로스(MA{chart_short} < MA{chart_long}) AND RSI < 45
-  공통 손절: 수익률 ≤ {slr}% 즉시 매도
-  조기 손절: 진입 2분 이내 수익률 < -1.2% 시 즉시 매도
-  트레일링 (4단계):
-    peak ≥ 7%  → gap 1.5% / peak ≥ 4%  → gap 2.0%
-    peak ≥ 2%  → gap 2.5% / peak < 2%   → phase 기본값
+■ ORB 매매 (09:05~09:30, 장초반 한정)
+  진입 조건:
+    • 09:00~09:04 ORB 범위 확립(고점/저점) 후
+    • 현재가 > ORB고점 + 거래량 ≥ 직전봉×1.5 + RSI 50~75
+    • 추격 방지: 현재가 ≤ ORB고점×1.01 / 최대 5회
+  손절: max(ORB저점%, -2%) 기준 이탈 시 즉시 매도
+  수익 관리 (4단계 동적):
+    peak < 2%  → 트레일링 1.2% / peak < 4%  → 1.5%
+    peak < 7%  → 2.0% / peak ≥ 7%  → 2.5%
+  수익 반납 방지: peak ≥ 1.5% 후 수익률 0% 이하 시 즉시 매도
 
-  [장 초반] 직전 3봉 고점 돌파 확인(2.5초)
-            거래량 > 직전봉×1.5 / 현재가 > 시가×0.99 / RSI 40~70
-            최대 5회 / 손절 -2% / 트레일링 2%
-
-  [장 중반] 직전 5봉 고점 돌파 확인(3초)
-            RSI 45~70 + RSI 상승 중
-            손절 {slr}% / 트레일링 {tsg}% (동적 4단계)
-
-  [장 후반] 직전 5봉 고점 돌파 확인(3초)
-            거래량 > 직전봉 / RSI 50~60 + RSI 상승 중 + 현재가 > MA{chart_long}
-            손절 {slr}% / 트레일링 2.5%
+■ MOMENTUM 매매 (09:00~15:20)
+  공통 조건:
+    • 직전 5봉 고점 돌파 확인(3초 유지)
+    • 추격 방지: +1.5% 초과 금지 / 과열 종목(등락률>23%) 제외
+    • 쿨다운: 매도 후 20분 동일 종목 재매수 금지 / 당일 손실 2회 이상 금지
+  진입 신호: 현재가 > 직전5봉고점 + RSI 45~70 + RSI 상승 중
+  청산 신호: 데드크로스(MA{chart_short}<MA{chart_long}) AND RSI < 45
+  손절: {slr}% 기준 즉시 매도 / 조기손절 -1.2%(진입 후 2분 이내)
+  수익 관리 (4단계 동적):
+    peak ≥ 7%  → 1.5% / peak ≥ 4%  → 2.0%
+    peak ≥ 2%  → 2.5% / peak < 2%   → {tsg}% (phase 기본값)
 
 • 1회 매수 금액: 총자산 × {brt}%"""
 

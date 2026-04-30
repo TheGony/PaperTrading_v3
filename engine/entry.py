@@ -39,9 +39,7 @@ class EntryMixin:
 				cooldown_minutes = 20
 				needed = max(chart_long + 1, rsi_period + 2)
 
-				# ── Phase별 고점 돌파 기준 ───────────────────────
-				phase = MarketHour.get_market_phase()
-				breakout_bars = 3 if phase == 'early' else 5
+				breakout_bars = 5  # MOMENTUM 고정
 
 				# 보유 종목 확인
 				my_stocks, aset_evlt_amt_cache, _ = await asyncio.get_event_loop().run_in_executor(
@@ -54,10 +52,10 @@ class EntryMixin:
 					continue
 				held_stock_codes = [stock['stk_cd'].replace('A', '') for stock in my_stocks]
 
-				# ── ORB 진입 루프 (09:05~, early phase 전용) ──────────
-				if phase == 'early' and self.orb_candidates:
+				# ── ORB 진입 루프 (09:05~09:30, 초반 전용) ──────────
+				if self.orb_candidates:
 					now_time = datetime.datetime.now().time()
-					if now_time >= datetime.time(9, 5):
+					if datetime.time(9, 5) <= now_time <= datetime.time(9, 30):
 						for orb_stock in self.orb_candidates:
 							stk_cd_orb = orb_stock['stk_cd']
 							if stk_cd_orb in held_stock_codes or stk_cd_orb in self.entry_time:
@@ -74,7 +72,7 @@ class EntryMixin:
 
 				for stk_cd in stocks_to_check:
 					# 1분봉 데이터 조회 (needed개, 최신순) - 종가 + 거래량 + 시가 + 고가
-					prices, volumes, open_prices, _ = await self._get_chart(stk_cd, needed)
+					prices, volumes, _, _ = await self._get_chart(stk_cd, needed)
 
 					# 데이터 유효성 검사
 					if len(prices) < needed or any(p == 0.0 for p in prices):
@@ -115,10 +113,12 @@ class EntryMixin:
 					# ── 진입 (phase별 조건) ──────────────────────────
 					if stk_cd in self.selected_stocks and stk_cd not in held_stock_codes and stk_cd not in self.entry_time:
 
+						if not MarketHour.is_entry_allowed():
+							continue
+
 						breakout_high = max(prices[1:breakout_bars + 1])
 
-						# 추격매수 방지: 장초반 2%, 중반/후반 1.5%
-						chase_limit = 1.02 if phase == 'early' else 1.015
+						chase_limit = 1.015  # MOMENTUM 고정
 						if current_price > breakout_high * chase_limit:
 							print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd} 탈락: 추격매수 방지 (현재가 {current_price:.0f} > 고점×{chase_limit} {breakout_high*chase_limit:.0f})")
 							continue
@@ -143,59 +143,16 @@ class EntryMixin:
 
 						prev_rsi = self._calc_rsi(prices[1:], rsi_period)
 
-						if phase == 'early':
-							# 최대 5회 진입 제한
-							if self.early_buy_count >= 5:
-								print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: 장초반 최대 매수 5회 초과 - 매수 스킵")
-								continue
-							# 거래량 > 직전봉 × 1.5 (폭발적 증가만 허용)
-							if prev_vol == 0 or curr_vol < prev_vol * 1.5:
-								print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: 거래량 미달 (현재 {curr_vol:.0f} < 직전봉×1.5 {prev_vol*1.5:.0f}) - 매수 스킵")
-								continue
-							# 현재가 > 시가 × 0.98 (-2% 눌림 허용)
-							today_open = open_prices[-1] if open_prices and open_prices[-1] > 0 else 0
-							if today_open > 0 and current_price <= today_open * 0.98:
-								print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: 현재가({current_price:.0f}) <= 시가({today_open:.0f})×0.98 - 매수 스킵")
-								continue
-							# RSI 40 <= x <= 70
-							if rsi is None or rsi < 40:
-								print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: RSI {rsi_str} < 40 - 매수 스킵")
-								continue
-							if rsi > 70:
-								print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: RSI {rsi_str} > 70 (과열) - 매수 스킵")
-								continue
-
-						elif phase == 'mid':
-							# RSI 45 <= x <= 70 AND RSI >= prev_RSI (상승 중)
-							if rsi is None or rsi < 45:
-								print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: RSI {rsi_str} < 45 - 매수 스킵")
-								continue
-							if rsi > 70:
-								print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: RSI {rsi_str} > 70 (과열) - 매수 스킵")
-								continue
-							if prev_rsi is not None and rsi < prev_rsi * 0.98:
-								print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: RSI 하락 중 ({prev_rsi:.1f}→{rsi_str}) - 매수 스킵")
-								continue
-
-						else:  # late
-							# 거래량 > 직전봉
-							if prev_vol == 0 or curr_vol <= prev_vol:
-								print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: 거래량 미달 (현재 {curr_vol:.0f} <= 직전봉 {prev_vol:.0f}) - 매수 스킵")
-								continue
-							# RSI 50 <= x <= 60 AND RSI >= prev_RSI (상승 중)
-							if rsi is None or rsi < 50:
-								print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: RSI {rsi_str} < 50 - 매수 스킵")
-								continue
-							if rsi > 60:
-								print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: RSI {rsi_str} > 60 (과열) - 매수 스킵")
-								continue
-							if prev_rsi is not None and rsi < prev_rsi:
-								print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: RSI 하락 중 ({prev_rsi:.1f}→{rsi_str}) - 매수 스킵")
-								continue
-							# 현재가 > MA20
-							if current_price <= ma_long_curr:
-								print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: 현재가({current_price:.0f}) <= MA{chart_long}({ma_long_curr:.1f}) - 매수 스킵")
-								continue
+						# ── MOMENTUM 진입 조건: RSI 45~70 + RSI 상승 중 ──────
+						if rsi is None or rsi < 45:
+							print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: RSI {rsi_str} < 45 - 매수 스킵")
+							continue
+						if rsi > 70:
+							print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: RSI {rsi_str} > 70 (과열) - 매수 스킵")
+							continue
+						if prev_rsi is not None and rsi < prev_rsi * 0.98:
+							print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: RSI 하락 중 ({prev_rsi:.1f}→{rsi_str}) - 매수 스킵")
+							continue
 
 						# ── 당일 2회 손실 종목 진입 금지 ────────────────
 						if self.daily_loss_count.get(stk_cd, 0) >= 2:
@@ -208,36 +165,25 @@ class EntryMixin:
 							print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: 과열(flu_rt={flu_rt:.1f}% > 23%) - 매수 스킵")
 							continue
 
-						# ── 고점 근접 필터 (장초반 생략, 중반/후반만 적용) ──────
-						if phase != 'early':
-							stk_info = await asyncio.get_event_loop().run_in_executor(
-								None, fn_ka10001, stk_cd, 'N', '', self.token
-							)
-							if stk_info:
-								intraday_high = stk_info.get('high_pric')
-								if intraday_high and intraday_high > 0:
-									if current_price >= intraday_high * 0.98:
-										if curr_vol <= prev_vol * 1.7:
-											print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: 고점({intraday_high:.0f}) 근접+거래량 미달 - 매수 스킵")
-											continue
-
 						# ── 진입 스냅샷 빌드 ────────────────────────────
-						confirm_secs = 2.5 if phase == 'early' else 3.0
+						confirm_secs = 3.0
 						meta = self.selected_stocks_meta.get(stk_cd, {})
 						kospi_flu, kosdaq_flu = await asyncio.get_event_loop().run_in_executor(
 							None, fn_get_market_index, self.token
 						)
+						market_open  = datetime.datetime.now().replace(hour=9, minute=0, second=0, microsecond=0)
+						entry_time_min     = round((datetime.datetime.now() - market_open).total_seconds() / 60, 1)
+						breakout_strength  = round((current_price / breakout_high - 1) * 100, 2)
 						entry_snapshot = {
 							'entry_price':     current_price,
 							'entry_rsi':       round(rsi, 2) if rsi is not None else None,
 							'entry_flu_rt':    meta.get('flu_rt', 0),
 							'entry_vol_ratio': round(curr_vol / prev_vol, 2) if prev_vol > 0 else None,
 							'entry_score':     round(meta.get('score', 0), 4),
-							'is_foreign':      meta.get('is_foreign', False),
-							'kospi_flu':       kospi_flu,
-							'kosdaq_flu':      kosdaq_flu,
-							'strategy':        '모멘텀',
-							'confirm_secs':    confirm_secs,
+						'is_foreign':      meta.get('is_foreign', False),
+							'entry_trde_amt':     meta.get('trde_amt', None),
+							'entry_trde_amt_rank': meta.get('trde_amt_rank', None),
+							'entry_time_min':     entry_time_min,
 						}
 
 						# 돌파 유지 확인
@@ -246,13 +192,11 @@ class EntryMixin:
 
 						gap_to_high = (current_price / breakout_high - 1) * 100
 						signal_info = (
-							f"📈 [{self._phase_name(phase)}] 돌파 확인 진입: {stk_cd}\n"
+							f"📈 [MOMENTUM] 돌파 확인 진입: {stk_cd}\n"
 							f"   현재가: {current_price:.0f} | 직전{breakout_bars}봉 고점: {breakout_high:.0f} ({gap_to_high:+.1f}%)\n"
 							f"   RSI: {rsi_str} | 거래량: {curr_vol:.0f} (직전봉: {prev_vol:.0f}) | 확인: {confirm_secs}초"
 						)
-						bought = await self._buy_stock(stk_cd, current_price, signal_info=signal_info, snapshot=entry_snapshot, acnt_cache=(my_stocks, aset_evlt_amt_cache))
-						if bought and phase == 'early':
-							self.early_buy_count += 1
+						await self._buy_stock(stk_cd, current_price, signal_info=signal_info, snapshot=entry_snapshot, acnt_cache=(my_stocks, aset_evlt_amt_cache))
 
 				# 성공적으로 완료되면 루프 종료
 				return
@@ -381,7 +325,7 @@ class EntryMixin:
 			'orb_stop_pct':    orb_stop_pct,
 			'orb_gap':         orb_gap,
 			'orb_overshoot':   orb_overshoot,
-			'strategy':        '장초반ORB',
+			'strategy':        'ORB',
 			'confirm_secs':    3.0,
 		}
 		# 돌파 유지 확인: 3초 동안 가격·거래량 유지

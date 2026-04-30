@@ -1,6 +1,7 @@
 import asyncio
+import math
 from api.chart import fn_ka10080_full
-from api.ranking import fn_ka10032, fn_ka10023
+from api.ranking import fn_ka10032, fn_ka10030, fn_ka10027, fn_ka10029
 from util.tel_send import tel_send
 from util.logger import get_logger
 
@@ -13,25 +14,47 @@ class OrbSelectorMixin:
 		"""ORB 전용 후보 선정. 결과를 self.orb_candidates에 저장."""
 		log = get_logger()
 
-		# 거래대금 상위 50개 (메인) + 거래량급증 50개 (보조 — sdnin_rt 확보)
-		raw_trde, raw_vol = await asyncio.gather(
-			asyncio.get_event_loop().run_in_executor(None, fn_ka10032, 50, 'N', '', self.token),
-			asyncio.get_event_loop().run_in_executor(None, fn_ka10023, 50, 'N', '', self.token),
+		# ── 1. 병렬 API 조회 ────────────────────────────────────
+		raw_trde, raw_vol, raw_chg, raw_exp = await asyncio.gather(
+			asyncio.get_event_loop().run_in_executor(None, fn_ka10032, 30, 'N', '', self.token),  # 거래대금 상위
+			asyncio.get_event_loop().run_in_executor(None, fn_ka10030, 30, 'N', '', self.token),  # 당일 거래량 상위
+			asyncio.get_event_loop().run_in_executor(None, fn_ka10027, 30, 'N', '', self.token),  # 전일대비 등락률 상위
+			asyncio.get_event_loop().run_in_executor(None, fn_ka10029, 30, 'N', '', self.token),  # 예상체결 등락률 상위
 		)
-		if not raw_trde:
-			tel_send("⚠️ [ORB] 후보 조회 실패 (거래대금 API 응답 없음)")
+
+		if not raw_trde and not raw_vol:
+			tel_send("⚠️ [ORB] 후보 조회 실패 (거래대금/거래량 API 응답 없음)")
 			self.orb_candidates = []
 			return []
 
-		sdnin_map = {s['stk_cd']: s.get('sdnin_rt') for s in (raw_vol or [])}
-		raw = [s for s in raw_trde if not self._is_excluded(s.get('stk_nm', ''))]
+		# ── 2. 보조 데이터 맵 구축 ───────────────────────────────
+		# ka10030: 당일 거래량 (trde_qty) 맵
+		vol_map     = {s['stk_cd']: s.get('trde_qty', 0) for s in (raw_vol or [])}
+		# ka10030: 거래대금 맵 (trde_amt = trde_prica 백만원 단위)
+		amt_vol_map = {s['stk_cd']: s.get('trde_amt', 0) for s in (raw_vol or [])}
+		# ka10029: 예상체결 등락률 맵 (flu_rt 필드)
+		exp_map     = {s['stk_cd']: s.get('flu_rt', 0) for s in (raw_exp or [])}
 
+		# ── 3. 유동성 풀 구성 (ka10032 + ka10030 병합, ETF/ETN 제거) ──
+		seen = {}
+		for s in (raw_trde or []) + (raw_vol or []):
+			cd = s.get('stk_cd', '')
+			if cd and cd not in seen:
+				seen[cd] = s
+		pool = [s for s in seen.values() if not self._is_excluded(s.get('stk_nm', ''))]
+
+		if not pool:
+			tel_send("⚠️ [ORB] ETF/ETN 제거 후 후보 없음")
+			self.orb_candidates = []
+			return []
+
+		# ── 4. 캔들 필터 (09:00~09:10) ───────────────────────────
 		def _hhmm(t):
 			t = str(t).strip()
 			return t[8:12] if len(t) >= 14 else t[0:4]
 
 		candidates = []
-		for s in raw:
+		for s in pool:
 			stk_cd  = s['stk_cd']
 			candles = await asyncio.get_event_loop().run_in_executor(
 				None, fn_ka10080_full, stk_cd, 15, 'N', '', self.token
@@ -40,8 +63,8 @@ class OrbSelectorMixin:
 			if not candles:
 				continue
 
-			# 09:00~09:04 봉 추출
-			open_candles = [c for c in candles if '0900' <= _hhmm(c['cntr_tm']) <= '0904']
+			# 09:00~09:10 봉 추출
+			open_candles = [c for c in candles if '0900' <= _hhmm(c['cntr_tm']) <= '0910']
 			if not open_candles:
 				continue
 
@@ -53,11 +76,11 @@ class OrbSelectorMixin:
 				continue
 			gap = (day_open - prev_close) / prev_close * 100
 
-			# 하드 필터: 갭 하락(갭 ≤ 0) 종목만 제외
+			# 갭 하락 제외
 			if gap <= 0:
 				continue
 
-			# 하드 필터: -2% 눌림까지 허용 (기존 현재가 ≥ 시가 → 완화)
+			# 시가 대비 -2% 이상 눌림 제외
 			cur_prc = candles[0]['cur_prc']
 			if cur_prc < day_open * 0.98:
 				continue
@@ -66,62 +89,78 @@ class OrbSelectorMixin:
 			upper_tail_ratio = (latest_high - cur_prc) / latest_high if latest_high > 0 else 0
 			bearish_count    = sum(1 for c in open_candles if c['cur_prc'] < c['open_pric'])
 
-			# 소프트 패널티 (조건 이탈 시 감점, 탈락은 없음)
+			# 소프트 패널티
 			penalty = 0.0
-			if not (1.5 <= gap <= 8.0):  # 이상적 갭 범위 이탈
+			if not (1.5 <= gap <= 8.0):
 				penalty += 0.2
-			if upper_tail_ratio > 0.05:  # 윗꼬리 > 5%
+			if upper_tail_ratio > 0.05:
 				penalty += 0.2
-			if bearish_count >= 2:       # 음봉 2개 이상
+			if bearish_count >= 2:
 				penalty += 0.2
+
+			# 거래대금: ka10032 우선, 없으면 ka10030 값 사용
+			trde_prica = s.get('trde_prica', 0) or amt_vol_map.get(stk_cd, 0)
 
 			candidates.append({
 				'stk_cd':     stk_cd,
 				'stk_nm':     s.get('stk_nm', stk_cd),
 				'gap':        round(gap, 2),
 				'flu_rt':     s.get('flu_rt', 0),
-				'trde_prica': s.get('trde_prica', 0),
-				'sdnin_rt':   sdnin_map.get(stk_cd),
+				'trde_prica': trde_prica,
+				'trde_qty':   vol_map.get(stk_cd, 0),
+				'exp_flu_rt': exp_map.get(stk_cd, 0),
 				'penalty':    penalty,
+				'strategy':   'ORB',
 			})
 
-		# 스코어링: sdnin_rt 없으면 패널티(0.3)로 살림
+		# ── 5. 스코어링 ───────────────────────────────────────────
+		# score = trde_amt_norm*0.25 + today_volume_norm*0.30
+		#       + expected_change_norm*0.25 + flu_rt_norm*0.10 - penalty
 		if candidates:
-			max_sdnin = max((c['sdnin_rt'] for c in candidates if c['sdnin_rt'] is not None), default=1) or 1
-			max_flu   = max(c['flu_rt']     for c in candidates) or 1
-			max_trde  = max(c['trde_prica'] for c in candidates) or 1
+			max_trde = max(c['trde_prica'] for c in candidates) or 1
+			max_vol  = max(c['trde_qty']   for c in candidates) or 1
+			max_exp  = max((c['exp_flu_rt'] for c in candidates if c['exp_flu_rt'] > 0), default=1) or 1
+			max_flu  = max((c['flu_rt']     for c in candidates if c['flu_rt']     > 0), default=1) or 1
+
 			for c in candidates:
-				sdnin_rt    = c['sdnin_rt']
-				volume_norm = (sdnin_rt / max_sdnin) if sdnin_rt is not None else 0.3
-				c['score']  = (
-					volume_norm                  * 0.40 +
-					(c['flu_rt']     / max_flu)  * 0.35 +
-					(c['trde_prica'] / max_trde) * 0.25
+				trde_amt_norm        = math.log(max(c['trde_prica'], 1)) / math.log(max(max_trde, 2))
+				today_volume_norm    = math.log(max(c['trde_qty'],   1)) / math.log(max(max_vol,  2))
+				expected_change_norm = max(c['exp_flu_rt'], 0) / max_exp
+				flu_rt_norm          = max(c['flu_rt'],     0) / max_flu
+
+				c['score'] = (
+					trde_amt_norm        * 0.25 +
+					today_volume_norm    * 0.30 +
+					expected_change_norm * 0.25 +
+					flu_rt_norm          * 0.10
 					- c['penalty']
 				)
 			candidates.sort(key=lambda x: x['score'], reverse=True)
 
-		# 최소 후보 보장: 5개 미만이면 거래대금 상위로 보충 (캔들 필터 생략)
+		# ── 6. 최소 후보 보충 (캔들 필터 미통과 종목, 거래대금 순) ──
 		if len(candidates) < self.ORB_MIN_CANDIDATES:
 			existing = {c['stk_cd'] for c in candidates}
-			added    = 0
-			for s in raw:
+			before   = len(candidates)
+			for s in pool:
 				if len(candidates) >= self.ORB_MIN_CANDIDATES:
 					break
 				if s['stk_cd'] in existing:
 					continue
+				trde_prica = s.get('trde_prica', 0) or amt_vol_map.get(s['stk_cd'], 0)
 				candidates.append({
 					'stk_cd':     s['stk_cd'],
 					'stk_nm':     s.get('stk_nm', s['stk_cd']),
-					'gap':        None,  # 캔들 미조회
+					'gap':        None,
 					'flu_rt':     s.get('flu_rt', 0),
-					'trde_prica': s.get('trde_prica', 0),
-					'sdnin_rt':   sdnin_map.get(s['stk_cd']),
+					'trde_prica': trde_prica,
+					'trde_qty':   vol_map.get(s['stk_cd'], 0),
+					'exp_flu_rt': exp_map.get(s['stk_cd'], 0),
 					'score':      -0.5,
 					'penalty':    0.0,
+					'strategy':   'ORB',
 				})
 				existing.add(s['stk_cd'])
-				added += 1
+			added = len(candidates) - before
 			if added > 0:
 				tel_send(f"⚠️ [ORB] 후보 부족 → 거래대금 상위 {added}종목 보충 (총 {len(candidates)}종목)")
 

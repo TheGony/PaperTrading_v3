@@ -10,10 +10,14 @@ class MarketHour:
 	MARKET_END_MINUTE = 30
 
 	# 구간 경계
-	EARLY_END_HOUR   = 9   # 장 초반 종료: 09:45
-	EARLY_END_MINUTE = 45
-	LATE_START_HOUR   = 14  # 장 후반 시작: 14:40
-	LATE_START_MINUTE = 40
+	EARLY_END_HOUR   = 9   # 장 초반 종료: 09:30
+	EARLY_END_MINUTE = 30
+	LATE_START_HOUR   = 15  # 장 후반 시작: 15:00
+	LATE_START_MINUTE = 0
+
+	# 매수/종목선정 종료 시각
+	ENTRY_END_HOUR   = 15  # 15:20 이후 진입 차단
+	ENTRY_END_MINUTE = 20
 	
 	@staticmethod
 	def _is_weekday():
@@ -53,6 +57,16 @@ class MarketHour:
 		now = datetime.datetime.now()
 		market_end = cls._get_market_time(cls.MARKET_END_HOUR, cls.MARKET_END_MINUTE)
 		return now >= market_end and (now - market_end).seconds < 60  # 1분 이내
+
+	@classmethod
+	def is_entry_allowed(cls):
+		"""현재 시간이 매수/종목선정 허용 구간인지 확인 (15:20 이후 차단)"""
+		if not cls._is_weekday():
+			return False
+		now = datetime.datetime.now()
+		open_    = cls._get_market_time(cls.MARKET_START_HOUR, cls.MARKET_START_MINUTE)
+		entry_end = cls._get_market_time(cls.ENTRY_END_HOUR, cls.ENTRY_END_MINUTE)
+		return open_ <= now < entry_end
 
 	@classmethod
 	def get_market_phase(cls):

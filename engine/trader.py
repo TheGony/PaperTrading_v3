@@ -22,52 +22,36 @@ class TraderMixin:
 		try:
 			await self._wait_for_market_start()
 
-			# ORB 전용 후보 선정 1차 (09:01) — early phase 한정
-			if MarketHour.get_market_phase() == 'early':
-				await self._get_orb_candidates()
+			# ORB 후보 선정 1차 (09:01)
+			await self._get_orb_candidates()
 
-			# 모멘텀 후보 선정 (실패해도 루프는 유지 - 다음 갱신 주기에 재시도)
+			# MOMENTUM 초기 종목 선정
 			await self._select_initial_stocks()
 
-			last_refresh_time  = datetime.datetime.now()
-			self.current_phase = MarketHour.get_market_phase()
-			# early 이후 시작이거나 09:03 이미 지난 경우 2차 갱신 불필요
-			orb_refreshed = (
-				self.current_phase != 'early'
-				or last_refresh_time.time() >= datetime.time(9, 3)
-			)
+			last_refresh_time = datetime.datetime.now()
+			# 09:03 이미 지난 경우 ORB 2차 갱신 불필요
+			orb_refreshed = last_refresh_time.time() >= datetime.time(9, 3)
 
 			while self.is_running and MarketHour.is_market_open_time():
 				loop_start = datetime.datetime.now()
-				now   = loop_start
-				phase = MarketHour.get_market_phase()
+				now = loop_start
 
-				# ── ORB 2차 갱신 (09:03) ────────────────────────
+				# ── ORB 2차 갱신 (09:03) ────────────────────────────
 				if not orb_refreshed and now.time() >= datetime.time(9, 3):
 					await self._get_orb_candidates(is_refresh=True)
 					orb_refreshed = True
 
-				# ── 구간 전환 감지 ──────────────────────────────
-				if phase != self.current_phase:
-					tel_send(f"🕐 구간 전환: {self._phase_name(self.current_phase)} → {self._phase_name(phase)}")
-					self.current_phase = phase
-					# 장 후반 전환 시에는 신규 선정 없음 (기존 유지)
-					if phase != 'late':
-						await self._select_initial_stocks()
-					last_refresh_time = now
-
-				# ── 종목 즉시 보충 (daily_loss_count 2회 제거 후) ──
-				elif self.needs_stock_refresh:
+				# ── MOMENTUM 즉시 보충 (daily_loss_count 2회 제거 후) ──
+				if self.needs_stock_refresh:
 					self.needs_stock_refresh = False
-					await self._refresh_selected_stocks(phase=phase)
-					last_refresh_time = now
-
-				# ── 주기 갱신 (장 초반 2분 / 장 중반·후반 5분) ──
-				else:
-					refresh_interval = self.EARLY_STOCK_REFRESH_INTERVAL if phase == 'early' else self.STOCK_REFRESH_INTERVAL
-					if (now - last_refresh_time).total_seconds() >= refresh_interval:
-						await self._refresh_selected_stocks(phase=phase)
+					if MarketHour.is_entry_allowed():
+						await self._refresh_selected_stocks()
 						last_refresh_time = now
+
+				# ── MOMENTUM 주기 갱신 (5분) ─────────────────────────
+				elif (now - last_refresh_time).total_seconds() >= self.STOCK_REFRESH_INTERVAL and MarketHour.is_entry_allowed():
+					await self._refresh_selected_stocks()
+					last_refresh_time = now
 
 				await self._check_charts_and_trade()
 				self.last_chart_check_time = now
