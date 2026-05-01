@@ -1,7 +1,7 @@
 import asyncio
 import math
 from api.chart import fn_ka10080_full
-from api.ranking import fn_ka10032, fn_ka10030, fn_ka10027, fn_ka10029
+from api.ranking import fn_ka10032, fn_ka10030
 from util.tel_send import tel_send
 from util.logger import get_logger
 
@@ -15,11 +15,9 @@ class OrbSelectorMixin:
 		log = get_logger()
 
 		# ── 1. 병렬 API 조회 ────────────────────────────────────
-		raw_trde, raw_vol, raw_chg, raw_exp = await asyncio.gather(
+		raw_trde, raw_vol = await asyncio.gather(
 			asyncio.get_event_loop().run_in_executor(None, fn_ka10032, 30, 'N', '', self.token),  # 거래대금 상위
 			asyncio.get_event_loop().run_in_executor(None, fn_ka10030, 30, 'N', '', self.token),  # 당일 거래량 상위
-			asyncio.get_event_loop().run_in_executor(None, fn_ka10027, 30, 'N', '', self.token),  # 전일대비 등락률 상위
-			asyncio.get_event_loop().run_in_executor(None, fn_ka10029, 30, 'N', '', self.token),  # 예상체결 등락률 상위
 		)
 
 		if not raw_trde and not raw_vol:
@@ -29,11 +27,8 @@ class OrbSelectorMixin:
 
 		# ── 2. 보조 데이터 맵 구축 ───────────────────────────────
 		# ka10030: 당일 거래량 (trde_qty) 맵
-		vol_map     = {s['stk_cd']: s.get('trde_qty', 0) for s in (raw_vol or [])}
-		# ka10030: 거래대금 맵 (trde_amt = trde_prica 백만원 단위)
-		amt_vol_map = {s['stk_cd']: s.get('trde_amt', 0) for s in (raw_vol or [])}
-		# ka10029: 예상체결 등락률 맵 (flu_rt 필드)
-		exp_map     = {s['stk_cd']: s.get('flu_rt', 0) for s in (raw_exp or [])}
+		vol_map      = {s['stk_cd']: s.get('trde_qty', 0) for s in (raw_vol or [])}
+		trde_amt_map = {s['stk_cd']: s.get('trde_amt', 0) for s in (raw_vol or [])}
 
 		# ── 3. 유동성 풀 구성 (ka10032 + ka10030 병합, ETF/ETN 제거) ──
 		seen = {}
@@ -99,7 +94,7 @@ class OrbSelectorMixin:
 				penalty += 0.2
 
 			# 거래대금: ka10032 우선, 없으면 ka10030 값 사용
-			trde_prica = s.get('trde_prica', 0) or amt_vol_map.get(stk_cd, 0)
+			trde_prica = s.get('trde_prica', 0) or trde_amt_map.get(stk_cd, 0)
 
 			candidates.append({
 				'stk_cd':     stk_cd,
@@ -108,31 +103,26 @@ class OrbSelectorMixin:
 				'flu_rt':     s.get('flu_rt', 0),
 				'trde_prica': trde_prica,
 				'trde_qty':   vol_map.get(stk_cd, 0),
-				'exp_flu_rt': exp_map.get(stk_cd, 0),
 				'penalty':    penalty,
 				'strategy':   'ORB',
 			})
 
 		# ── 5. 스코어링 ───────────────────────────────────────────
-		# score = trde_amt_norm*0.25 + today_volume_norm*0.30
-		#       + expected_change_norm*0.25 + flu_rt_norm*0.10 - penalty
+		# score = today_volume_norm*0.40 + trde_amt_norm*0.30 + flu_rt_norm*0.30 - penalty
 		if candidates:
 			max_trde = max(c['trde_prica'] for c in candidates) or 1
 			max_vol  = max(c['trde_qty']   for c in candidates) or 1
-			max_exp  = max((c['exp_flu_rt'] for c in candidates if c['exp_flu_rt'] > 0), default=1) or 1
 			max_flu  = max((c['flu_rt']     for c in candidates if c['flu_rt']     > 0), default=1) or 1
 
 			for c in candidates:
-				trde_amt_norm        = math.log(max(c['trde_prica'], 1)) / math.log(max(max_trde, 2))
-				today_volume_norm    = math.log(max(c['trde_qty'],   1)) / math.log(max(max_vol,  2))
-				expected_change_norm = max(c['exp_flu_rt'], 0) / max_exp
-				flu_rt_norm          = max(c['flu_rt'],     0) / max_flu
+				trde_amt_norm     = math.log(max(c['trde_prica'], 1)) / math.log(max(max_trde, 2))
+				today_volume_norm = math.log(max(c['trde_qty'],   1)) / math.log(max(max_vol,  2))
+				flu_rt_norm       = max(c['flu_rt'],     0) / max_flu
 
 				c['score'] = (
-					trde_amt_norm        * 0.25 +
-					today_volume_norm    * 0.30 +
-					expected_change_norm * 0.25 +
-					flu_rt_norm          * 0.10
+					today_volume_norm * 0.40 +
+					trde_amt_norm     * 0.30 +
+					flu_rt_norm       * 0.30
 					- c['penalty']
 				)
 			candidates.sort(key=lambda x: x['score'], reverse=True)
@@ -146,7 +136,7 @@ class OrbSelectorMixin:
 					break
 				if s['stk_cd'] in existing:
 					continue
-				trde_prica = s.get('trde_prica', 0) or amt_vol_map.get(s['stk_cd'], 0)
+				trde_prica = s.get('trde_prica', 0) or trde_amt_map.get(s['stk_cd'], 0)
 				candidates.append({
 					'stk_cd':     s['stk_cd'],
 					'stk_nm':     s.get('stk_nm', s['stk_cd']),
@@ -154,7 +144,6 @@ class OrbSelectorMixin:
 					'flu_rt':     s.get('flu_rt', 0),
 					'trde_prica': trde_prica,
 					'trde_qty':   vol_map.get(s['stk_cd'], 0),
-					'exp_flu_rt': exp_map.get(s['stk_cd'], 0),
 					'score':      -0.5,
 					'penalty':    0.0,
 					'strategy':   'ORB',

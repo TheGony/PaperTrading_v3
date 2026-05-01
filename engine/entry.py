@@ -10,24 +10,82 @@ from util.tel_send import tel_send
 from util.logger import get_logger
 
 
+# ── VWAP / 기관수급 필터 (모듈 레벨 순수 함수) ────────────────────────────────
+
+def _calculate_vwap(prices: list, highs: list, volumes: list):
+    """VWAP = Σ(TP × vol) / Σ(vol),  TP = (high + close) / 2
+    입력 리스트는 최신봉 기준 내림차순(fn_ka10080 기본 순서).
+    low 미제공으로 (H+C)/2 근사 사용.
+    반환: float — 계산 불가 시 None
+    """
+    if not prices or not highs or not volumes:
+        return None
+    cum_tp_vol = 0.0
+    cum_vol    = 0.0
+    for close, high, vol in zip(reversed(prices), reversed(highs), reversed(volumes)):
+        if vol <= 0:
+            continue
+        cum_tp_vol += (high + close) / 2 * vol
+        cum_vol    += vol
+    return cum_tp_vol / cum_vol if cum_vol > 0 else None
+
+
+def _institutional_filter(current_price: float, vwap: float, prices: list, volumes: list):
+    """기관 수급 필터 — 세 조건 모두 통과해야 (True, '') 반환.
+
+    1. current_price > vwap                       (VWAP 상단 진입)
+    2. (current_price - vwap) / vwap ≤ 0.03       (VWAP 대비 3% 초과 과열 제외)
+    3. 최근 5봉 거래대금 > 이전 5봉 거래대금 × 1.2  (실질 매수세 확인)
+       거래대금 = close × volume
+
+    반환: (passed: bool, reason: str)
+    """
+    # 1. VWAP 상단 확인
+    if current_price <= vwap:
+        return False, f'VWAP 하회 (현재가 {current_price:.0f} ≤ VWAP {vwap:.0f})'
+
+    # 2. VWAP 대비 과열 제외
+    vwap_gap = (current_price - vwap) / vwap
+    if vwap_gap > 0.03:
+        return False, f'VWAP 과열 ({vwap_gap * 100:.1f}% > 3%)'
+
+    # 3. 최근 5봉 vs 이전 5봉 거래대금 비교 (데이터 충분한 경우만)
+    if len(prices) >= 10 and len(volumes) >= 10:
+        recent_tv = sum(p * v for p, v in zip(prices[:5],   volumes[:5]))
+        prev_tv   = sum(p * v for p, v in zip(prices[5:10], volumes[5:10]))
+        if prev_tv > 0 and recent_tv <= prev_tv * 1.2:
+            return False, (
+                f'거래대금 증가 부족 '
+                f'(최근5봉 {recent_tv / 1e6:.0f}M ≤ 이전5봉 {prev_tv / 1e6:.0f}M × 1.2)'
+            )
+
+    return True, ''
+
+
 class EntryMixin:
 	_CHART_CACHE_TTL = 55  # 초 (1분봉 갱신 주기보다 짧게, 실전 시 0으로 설정하면 캐시 비활성화)
 
 	async def _get_chart(self, stk_cd, needed):
-		"""ka10080 조회 with 캐시. 캐시 TTL 내 동일 종목 재요청 시 API 호출 생략."""
+		"""ka10080 조회 with 캐시+세마포어. TTL 내 동일 종목 재요청 시 API 호출 생략."""
 		now    = datetime.datetime.now()
 		cached = self._chart_cache.get(stk_cd)
 		if cached and (now - cached['ts']).total_seconds() < self._CHART_CACHE_TTL:
 			return cached['data']
-		data = await asyncio.get_event_loop().run_in_executor(
-			None, fn_ka10080, stk_cd, needed, 'N', '', self.token
-		)
-		await asyncio.sleep(1.0)
+		if self._chart_semaphore is None:
+			self._chart_semaphore = asyncio.Semaphore(4)
+		async with self._chart_semaphore:
+			# 세마포어 대기 후 재확인 (다른 코루틴이 먼저 채웠을 수 있음)
+			cached = self._chart_cache.get(stk_cd)
+			if cached and (now - cached['ts']).total_seconds() < self._CHART_CACHE_TTL:
+				return cached['data']
+			data = await asyncio.get_event_loop().run_in_executor(
+				None, fn_ka10080, stk_cd, needed, 'N', '', self.token
+			)
 		self._chart_cache[stk_cd] = {'ts': now, 'data': data}
 		return data
 
 	async def _check_charts_and_trade(self):
-		"""1분봉 기준 고점 돌파 진입 / 데드크로스+RSI 청산 (phase 기반)"""
+		"""1분봉 기준 고점 돌파 진입 / 데드크로스+RSI 청산"""
 		max_retries = 5
 		retry_delay = 1  # 1초
 
@@ -52,15 +110,26 @@ class EntryMixin:
 					continue
 				held_stock_codes = [stock['stk_cd'].replace('A', '') for stock in my_stocks]
 
-				# ── ORB 진입 루프 (09:05~09:30, 초반 전용) ──────────
-				if self.orb_candidates:
+				# ── 차트 데이터 병렬 사전 조회 (이후 루프는 캐시 사용) ──
+				prefetch_codes = list(set(
+					self.selected_stocks
+					+ held_stock_codes
+					+ [s['stk_cd'] for s in self.orb_candidates]
+				))
+				await asyncio.gather(
+					*[self._get_chart(cd, needed) for cd in prefetch_codes],
+					return_exceptions=True,
+				)
+
+				# ── ORB 진입 루프 (09:05~09:30, orb_ready 이후에만) ──────────
+				if self.orb_ready and self.orb_candidates:
 					now_time = datetime.datetime.now().time()
 					if datetime.time(9, 5) <= now_time <= datetime.time(9, 30):
 						for orb_stock in self.orb_candidates:
 							stk_cd_orb = orb_stock['stk_cd']
 							if stk_cd_orb in held_stock_codes or stk_cd_orb in self.entry_time:
 								continue
-							p_orb, v_orb, _, _ = await self._get_chart(stk_cd_orb, needed)
+							p_orb, v_orb, _, _, _ = await self._get_chart(stk_cd_orb, needed)
 							if len(p_orb) < needed or any(p == 0.0 for p in p_orb):
 								continue
 							rsi_orb = self._calc_rsi(p_orb, rsi_period)
@@ -71,8 +140,8 @@ class EntryMixin:
 				stocks_to_check = list(set(self.selected_stocks + held_stock_codes))
 
 				for stk_cd in stocks_to_check:
-					# 1분봉 데이터 조회 (needed개, 최신순) - 종가 + 거래량 + 시가 + 고가
-					prices, volumes, _, _ = await self._get_chart(stk_cd, needed)
+					# 1분봉 데이터 조회 (needed개, 최신순) - 캐시에서 즉시 반환
+					prices, volumes, _, highs, cntr_tm = await self._get_chart(stk_cd, needed)
 
 					# 데이터 유효성 검사
 					if len(prices) < needed or any(p == 0.0 for p in prices):
@@ -110,8 +179,14 @@ class EntryMixin:
 						else:
 							print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: 데드크로스 감지 but RSI {f'{rsi_exit:.1f}' if rsi_exit else 'N/A'} >= 45 - 청산 보류")
 
-					# ── 진입 (phase별 조건) ──────────────────────────
+					# ── MOMENTUM 진입 조건 ──────────────────────────
 					if stk_cd in self.selected_stocks and stk_cd not in held_stock_codes and stk_cd not in self.entry_time:
+
+						# 동일봉 스킵: 1분봉이 갱신되지 않았으면 진입 조건 재평가 불필요
+						if cntr_tm and self._last_candle_time.get(stk_cd) == cntr_tm:
+							continue
+						if cntr_tm:
+							self._last_candle_time[stk_cd] = cntr_tm
 
 						if not MarketHour.is_entry_allowed():
 							continue
@@ -128,6 +203,30 @@ class EntryMixin:
 							print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd} 탈락: 돌파 미발생 (현재가 {current_price:.0f} ≤ 고점 {breakout_high:.0f})")
 							continue
 
+						# ── 거래량 필터: 현재 거래량 > 최근 5봉 평균 × 1.3 ─────────
+						curr_vol  = volumes[0] if volumes else 0
+						avg_vol_5 = sum(volumes[1:6]) / len(volumes[1:6]) if len(volumes) > 1 else 0
+						if avg_vol_5 > 0 and curr_vol <= avg_vol_5 * 1.2:
+							print(
+								f"[{datetime.datetime.now().strftime('%H:%M:%S')}] "
+								f"{stk_cd}: 거래량 부족 "
+								f"(현재 {curr_vol:.0f} ≤ 5봉평균 {avg_vol_5:.0f} × 1.3)"
+							)
+							continue
+
+						# ── VWAP + 기관 수급 필터 ────────────────────────────────
+						vwap = _calculate_vwap(prices, highs, volumes)
+						if vwap is not None:
+							passed, reason = _institutional_filter(
+								current_price, vwap, prices, volumes
+							)
+							if not passed:
+								print(
+									f"[{datetime.datetime.now().strftime('%H:%M:%S')}] "
+									f"{stk_cd}: 기관수급 필터 탈락 — {reason}"
+								)
+								continue
+
 						# 쿨다운: 매도 후 20분 이내 재매수 금지
 						last_sell = self.sell_cooldown.get(stk_cd)
 						if last_sell:
@@ -136,8 +235,6 @@ class EntryMixin:
 								print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: 쿨다운 중 ({elapsed:.0f}/{cooldown_minutes}분) - 매수 스킵")
 								continue
 
-						curr_vol = volumes[0] if len(volumes) > 0 else 0
-						prev_vol = volumes[1] if len(volumes) > 1 else 0
 						rsi      = self._calc_rsi(prices, rsi_period)
 						rsi_str  = f"{rsi:.1f}" if rsi is not None else "N/A"
 
@@ -165,25 +262,90 @@ class EntryMixin:
 							print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: 과열(flu_rt={flu_rt:.1f}% > 23%) - 매수 스킵")
 							continue
 
+						# ── 고점 근접 필터 ──────────────────────────────────────
+						intraday_high = None
+						high_pct      = None
+						stk_info = await asyncio.get_event_loop().run_in_executor(
+							None, fn_ka10001, stk_cd, 'N', '', self.token
+						)
+						if stk_info:
+							intraday_high = stk_info.get('high_pric')
+							if intraday_high and intraday_high > 0:
+								if current_price >= intraday_high * 0.98:
+									if curr_vol <= avg_vol_5 * 1.7:
+										print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: 고점({intraday_high:.0f}) 근접+거래량 미달 - 매수 스킵")
+										continue
+								high_pct = round((current_price / intraday_high - 1) * 100, 2)
+
 						# ── 진입 스냅샷 빌드 ────────────────────────────
 						confirm_secs = 3.0
 						meta = self.selected_stocks_meta.get(stk_cd, {})
 						kospi_flu, kosdaq_flu = await asyncio.get_event_loop().run_in_executor(
 							None, fn_get_market_index, self.token
 						)
-						market_open  = datetime.datetime.now().replace(hour=9, minute=0, second=0, microsecond=0)
-						entry_time_min     = round((datetime.datetime.now() - market_open).total_seconds() / 60, 1)
-						breakout_strength  = round((current_price / breakout_high - 1) * 100, 2)
+						market_open       = datetime.datetime.now().replace(hour=9, minute=0, second=0, microsecond=0)
+						entry_time_min    = round((datetime.datetime.now() - market_open).total_seconds() / 60, 1)
+						breakout_strength = round((current_price / breakout_high - 1) * 100, 2)
+
+						# 최근 5봉 변동성 (직전봉 기준 5개)
+						recent_prices = prices[1:6]
+						recent_5bar_vol = None
+						if len(recent_prices) >= 2:
+							n      = len(recent_prices)
+							mean_p = sum(recent_prices) / n
+							if mean_p > 0:
+								variance = sum((p - mean_p) ** 2 for p in recent_prices) / (n - 1)
+								recent_5bar_vol = round(variance ** 0.5 / mean_p * 100, 2)
+
+						# 시장 상태
+						avg_mkt = ((kospi_flu or 0) + (kosdaq_flu or 0)) / 2
+						if avg_mkt >= 0.3:
+							market_state = '상승'
+						elif avg_mkt <= -0.3:
+							market_state = '하락'
+						else:
+							market_state = '보합'
+
+						# 선정 이유 자동 분류
+						reason_parts = []
+						if meta.get('is_foreign'):
+							reason_parts.append('외인수급')
+						meta_flu = meta.get('flu_rt') or 0
+						if meta_flu >= 5:
+							reason_parts.append('급등')
+						elif meta_flu >= 2:
+							reason_parts.append('상승')
+						meta_rsi = meta.get('rsi') or (round(rsi, 1) if rsi is not None else None)
+						if meta_rsi and meta_rsi >= 60:
+							reason_parts.append('RSI강세')
+						meta_rank = meta.get('rank')
+						if meta_rank and meta_rank <= 3:
+							reason_parts.append('거래량상위')
+						selection_reason = '+'.join(reason_parts) if reason_parts else '모멘텀'
+
 						entry_snapshot = {
 							'entry_price':     current_price,
 							'entry_rsi':       round(rsi, 2) if rsi is not None else None,
 							'entry_flu_rt':    meta.get('flu_rt', 0),
-							'entry_vol_ratio': round(curr_vol / prev_vol, 2) if prev_vol > 0 else None,
+							'entry_vol_ratio': round(curr_vol / avg_vol_5, 2) if avg_vol_5 > 0 else None,
 							'entry_score':     round(meta.get('score', 0), 4),
-						'is_foreign':      meta.get('is_foreign', False),
-							'entry_trde_amt':     meta.get('trde_amt', None),
+							'is_foreign':      meta.get('is_foreign', False),
+							'kospi_flu':       kospi_flu,
+							'kosdaq_flu':      kosdaq_flu,
+							'strategy':        'MOMENTUM',
+							'confirm_secs':    confirm_secs,
+							'breakout_strength':   breakout_strength,
+							'chase_pct':           breakout_strength,
+							'entry_trde_amt':      meta.get('trde_amt', None),
 							'entry_trde_amt_rank': meta.get('trde_amt_rank', None),
-							'entry_time_min':     entry_time_min,
+							'entry_time_min':      entry_time_min,
+							'entry_rank':          meta.get('rank', None),
+							'recent_5bar_vol':     recent_5bar_vol,
+							'market_state':        market_state,
+							'selection_reason':    selection_reason,
+							'high_pct':            high_pct,
+							'entry_vwap':          round(vwap, 2) if vwap is not None else None,
+							'vwap_gap_pct':        round((current_price - vwap) / vwap * 100, 2) if vwap is not None else None,
 						}
 
 						# 돌파 유지 확인
@@ -194,9 +356,17 @@ class EntryMixin:
 						signal_info = (
 							f"📈 [MOMENTUM] 돌파 확인 진입: {stk_cd}\n"
 							f"   현재가: {current_price:.0f} | 직전{breakout_bars}봉 고점: {breakout_high:.0f} ({gap_to_high:+.1f}%)\n"
-							f"   RSI: {rsi_str} | 거래량: {curr_vol:.0f} (직전봉: {prev_vol:.0f}) | 확인: {confirm_secs}초"
+							f"   RSI: {rsi_str} | 거래량: {curr_vol:.0f} (5봉평균: {avg_vol_5:.0f}) | 확인: {confirm_secs}초"
 						)
-						await self._buy_stock(stk_cd, current_price, signal_info=signal_info, snapshot=entry_snapshot, acnt_cache=(my_stocks, aset_evlt_amt_cache))
+						bought = await self._buy_stock(stk_cd, current_price, signal_info=signal_info, snapshot=entry_snapshot, acnt_cache=(my_stocks, aset_evlt_amt_cache))
+
+						# 매수 성공 후 선정종목에서 제거 + 수익률 스냅샷 태스크 시작
+						if stk_cd in self.selected_stocks:
+							self.selected_stocks.remove(stk_cd)
+							self.needs_stock_refresh = True
+							get_logger().info(f'[매수제외] {stk_cd} 매수 완료 → 선정 목록 제거, 보충 갱신 예약')
+						if bought:
+							asyncio.create_task(self._record_price_snapshots(stk_cd, current_price))
 
 				# 성공적으로 완료되면 루프 종료
 				return
@@ -207,6 +377,36 @@ class EntryMixin:
 					await asyncio.sleep(retry_delay)
 				else:
 					get_logger().error(f'[차트체크 실패] 최대 재시도 횟수({max_retries}) 초과')
+
+	async def _record_price_snapshots(self, stk_cd, entry_price):
+		"""매수 후 1분/3분 시점 수익률을 entry_snapshot에 기록 (exit 시 trade_detail에 포함)"""
+		await asyncio.sleep(60)
+		if stk_cd not in self.entry_snapshot:
+			return
+		try:
+			stk_info = await asyncio.get_event_loop().run_in_executor(
+				None, fn_ka10001, stk_cd, 'N', '', self.token
+			)
+			if stk_info:
+				cur_prc = stk_info.get('cur_prc', 0)
+				if cur_prc and cur_prc > 0 and stk_cd in self.entry_snapshot:
+					self.entry_snapshot[stk_cd]['pl_1m'] = round((cur_prc / entry_price - 1) * 100, 2)
+		except Exception:
+			pass
+
+		await asyncio.sleep(120)  # 60 + 120 = 진입 후 3분
+		if stk_cd not in self.entry_snapshot:
+			return
+		try:
+			stk_info = await asyncio.get_event_loop().run_in_executor(
+				None, fn_ka10001, stk_cd, 'N', '', self.token
+			)
+			if stk_info:
+				cur_prc = stk_info.get('cur_prc', 0)
+				if cur_prc and cur_prc > 0 and stk_cd in self.entry_snapshot:
+					self.entry_snapshot[stk_cd]['pl_3m'] = round((cur_prc / entry_price - 1) * 100, 2)
+		except Exception:
+			pass
 
 	async def _confirm_breakout(self, stk_cd, breakout_high, confirm_seconds):
 		"""돌파 후 confirm_seconds 동안 cur_prc > breakout_high 유지 확인. True=진입, False=초기화"""

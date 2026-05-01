@@ -9,7 +9,6 @@ import os
 from collections import defaultdict
 
 LOG_PATH = os.path.join('trading_logs', 'trade_detail.csv')
-PHASE_MAP = {'장초반': 'early', '장중반': 'mid', '장후반': 'late'}
 
 
 def load_trades(days=None):
@@ -66,20 +65,19 @@ def analyze(rows):
     print(f'  평균 손실: {avg_loss:+.2f}%')
     print(f'  기댓값:    {expectancy:+.3f}%  {"✅ 양수" if expectancy > 0 else "❌ 음수 → 전략 재검토 필요"}')
 
-    # ── 2. Phase별 기댓값 ──────────────────────────────────
-    print('\n[2] Phase별 기댓값')
-    phases = ['장초반', '장중반', '장후반']
-    for ph in phases:
-        ph_rows = [r for r in rows if r.get('구간') == ph]
-        if not ph_rows:
+    # ── 2. 전략별 기댓값 ────────────────────────────────────
+    print('\n[2] 전략별 기댓값')
+    for strategy in ['MOMENTUM', 'ORB']:
+        st_rows = [r for r in rows if r.get('구간') == strategy]
+        if not st_rows:
             continue
-        ph_wins  = [_f(r['수익률(%)']) for r in ph_rows if _f(r['수익률(%)'], 0) > 0]
-        ph_losses = [_f(r['수익률(%)']) for r in ph_rows if _f(r['수익률(%)'], 0) <= 0]
-        ph_wr = len(ph_wins) / len(ph_rows) * 100
-        ph_aw = sum(ph_wins)  / len(ph_wins)  if ph_wins  else 0
-        ph_al = sum(ph_losses) / len(ph_losses) if ph_losses else 0
-        ph_ex = (ph_wr / 100 * ph_aw) + ((1 - ph_wr / 100) * ph_al)
-        print(f'  {ph}: {len(ph_rows)}건 | 승률 {ph_wr:.0f}% | 기댓값 {ph_ex:+.3f}%')
+        st_wins   = [_f(r['수익률(%)']) for r in st_rows if _f(r['수익률(%)'], 0) > 0]
+        st_losses = [_f(r['수익률(%)']) for r in st_rows if _f(r['수익률(%)'], 0) <= 0]
+        st_wr = len(st_wins) / len(st_rows) * 100
+        st_aw = sum(st_wins)   / len(st_wins)   if st_wins   else 0
+        st_al = sum(st_losses) / len(st_losses) if st_losses else 0
+        st_ex = (st_wr / 100 * st_aw) + ((1 - st_wr / 100) * st_al)
+        print(f'  {strategy}: {len(st_rows)}건 | 승률 {st_wr:.0f}% | 기댓값 {st_ex:+.3f}%')
 
     # ── 3. MFE/MAE 분석 ────────────────────────────────────
     print('\n[3] Edge Ratio (MFE / |MAE|)')

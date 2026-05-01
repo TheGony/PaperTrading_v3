@@ -1,8 +1,8 @@
 import asyncio
 import math
-from api.chart import fn_ka10080
-from api.ranking import fn_ka10030
+from api.ranking import fn_ka10030, fn_ka10032, fn_ka10023
 from api.foreign import fn_ka90009
+from api.account import fn_kt00004
 from util.get_setting import get_setting
 from util.tel_send import tel_send
 from util.logger import get_logger
@@ -46,16 +46,23 @@ class StockSelectorMixin:
 		return excluded
 
 	async def _fetch_momentum_stocks(self):
-		"""MOMENTUM 전략 종목 선정: ka10030(거래량 상위)"""
+		"""MOMENTUM 전략 종목 선정: ka10030(주) + ka10023(보조), ka90009(수급)"""
 		stock_count = get_setting('stock_count', 10)
 		chart_long  = get_setting('chart_long', 20)
 		rsi_period  = 14
 		needed      = max(chart_long + 1, rsi_period + 2)
 
-		# ── 1. API 조회 (ka10030 거래량 상위 30) ──
-		raw = await asyncio.get_event_loop().run_in_executor(
-			None, fn_ka10030, 30, 'N', '', self.token
+		# ── 1. API 조회 (ka10030 거래량 상위 + ka10023 급증 보조 병합) ──
+		raw_vol, raw_surge = await asyncio.gather(
+			asyncio.get_event_loop().run_in_executor(None, fn_ka10030, 30, 'N', '', self.token),
+			asyncio.get_event_loop().run_in_executor(None, fn_ka10023, 30, 'N', '', self.token),
 		)
+		seen = {}
+		for s in (raw_vol or []) + (raw_surge or []):
+			cd = s.get('stk_cd', '')
+			if cd and cd not in seen:
+				seen[cd] = s
+		raw = list(seen.values())
 		if not raw:
 			return []
 
@@ -80,46 +87,55 @@ class StockSelectorMixin:
 			None, fn_ka90009, 'N', '', self.token
 		)
 
-		# ── 5. 차트 필터 → 후보 수집 ──────────────────────
-		candidates = []
-		for s in pool:
-			prices, _, _, _ = await asyncio.get_event_loop().run_in_executor(
-				None, fn_ka10080, s['stk_cd'], needed, 'N', '', self.token
-			)
-			await asyncio.sleep(0.3)
+		# ── 5. 차트 필터 → 후보 수집 (병렬, 공유 캐시) ──────────
+		async def _fetch(s):
+			prices, *_ = await self._get_chart(s['stk_cd'], needed)
 			if not prices or len(prices) < needed:
-				continue
+				return None
 			rsi = self._calc_rsi(prices, rsi_period)
-			candidates.append({
+			return {
 				**s,
 				'trde_amt_rank': amt_rank.get(s['stk_cd'], len(pool)),
 				'rsi_val':       rsi if rsi is not None else 50.0,
 				'is_foreign':    bool(buy_stocks and s['stk_cd'] in buy_stocks),
 				'strategy':      'MOMENTUM',
-			})
+			}
 
-		# ── 5. 로그 정규화 후 스코어 계산 ──────────────────────
-		# score = volume*0.35 + flu*0.30 + rsi*0.20 + foreign*0.15
+		results    = await asyncio.gather(*[_fetch(s) for s in pool], return_exceptions=True)
+		candidates = []
+		failed_stk = []
+		for s, r in zip(pool, results):
+			if r is not None and not isinstance(r, Exception):
+				candidates.append(r)
+			else:
+				failed_stk.append(s)
+
+		# ── 6. 로그 정규화 후 스코어 계산 ──────────────────────
+		# score = volume*0.30 + flu*0.25 + rsi*0.20 + foreign*0.15 + sdnin*0.10
 		scored = []
 		if candidates:
-			amt_list  = [c.get('trde_amt', 0) for c in candidates]
-			flu_list  = [c.get('flu_rt', 0)   for c in candidates]
-			max_amt   = max(amt_list) or 1
-			max_flu   = max(flu_list)
-			min_flu   = min(flu_list)
-			flu_range = (max_flu - min_flu) or 1
+			amt_list   = [c.get('trde_amt', 0)  for c in candidates]
+			flu_list   = [c.get('flu_rt', 0)    for c in candidates]
+			sdnin_list = [c.get('sdnin_rt', 0)  for c in candidates]
+			max_amt    = max(amt_list) or 1
+			max_flu    = max(flu_list)
+			min_flu    = min(flu_list)
+			flu_range  = (max_flu - min_flu) or 1
+			max_sdnin  = max(sdnin_list) or 1
 
 			for c in candidates:
 				volume_norm   = math.log(max(c.get('trde_amt', 1), 1)) / math.log(max(max_amt, 2))
 				flu_norm      = (c.get('flu_rt', 0) - min_flu) / flu_range
 				rsi_norm      = c['rsi_val'] / 100
 				foreign_score = 1.0 if c['is_foreign'] else 0.0
+				sdnin_norm    = c.get('sdnin_rt', 0) / max_sdnin
 
 				score = (
-					volume_norm   * 0.35 +
-					flu_norm      * 0.30 +
+					volume_norm   * 0.30 +
+					flu_norm      * 0.25 +
 					rsi_norm      * 0.20 +
-					foreign_score * 0.15
+					foreign_score * 0.15 +
+					sdnin_norm    * 0.10
 				)
 				scored.append({
 					**{k: v for k, v in c.items() if k not in ('rsi_val',)},
@@ -154,6 +170,24 @@ class StockSelectorMixin:
 				fb.sort(key=lambda x: x['score'], reverse=True)
 				scored += fb[:stock_count - len(scored)]
 
+		# ── 7. candidate_log 기록 ────────────────────────────────
+		if hasattr(self, '_log_candidates'):
+			selected_cds = {s['stk_cd'] for s in scored[:stock_count]}
+			log_entries  = []
+			for s in failed_stk:
+				log_entries.append({'stock': s, 'selected': False, 'reason': '데이터 부족', 'rank': None, 'score': None, 'rsi': None})
+			for i, c in enumerate(scored):
+				is_sel = c['stk_cd'] in selected_cds
+				log_entries.append({
+					'stock':    c,
+					'selected': is_sel,
+					'reason':   '' if is_sel else '점수 낮음',
+					'rank':     i + 1 if is_sel else None,
+					'score':    c.get('score'),
+					'rsi':      c.get('rsi'),
+				})
+			self._log_candidates(log_entries)
+
 		return scored[:stock_count]
 
 	async def _select_initial_stocks(self):
@@ -180,7 +214,9 @@ class StockSelectorMixin:
 				'trde_amt':      s.get('trde_amt', None),
 				'trde_amt_rank': s.get('trde_amt_rank', None),
 				'strategy':      'MOMENTUM',
-			} for s in ranked_stocks
+				'rank':          i + 1,
+				'rsi':           s.get('rsi', None),
+			} for i, s in enumerate(ranked_stocks)
 		}
 
 		tel_send(
@@ -233,14 +269,20 @@ class StockSelectorMixin:
 				s['stk_cd']: {
 					'flu_rt':        s.get('flu_rt', 0),
 					'score':         s.get('score', 0),
-				'is_foreign':    s.get('is_foreign', False),
-				'trde_amt':      s.get('trde_amt', None),
-				'trde_amt_rank': s.get('trde_amt_rank', None),
-				'strategy':      'MOMENTUM',
-			} for s in final_stocks
-		}
+					'is_foreign':    s.get('is_foreign', False),
+					'trde_amt':      s.get('trde_amt', None),
+					'trde_amt_rank': s.get('trde_amt_rank', None),
+					'strategy':      'MOMENTUM',
+					'rank':          i + 1,
+					'rsi':           s.get('rsi', None),
+				} for i, s in enumerate(final_stocks)
+			}
 
-		added   = [s for s in new_stocks if s not in self.selected_stocks]
+			added   = [s for s in new_stocks if s not in self.selected_stocks]
+			removed = [s for s in self.selected_stocks if s not in new_stocks]
+
+			self.selected_stocks_names.update(new_names)
+			final_map = {s['stk_cd']: s for s in final_stocks}
 
 			def _with_score(codes, src):
 				parts = []

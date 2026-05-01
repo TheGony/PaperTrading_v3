@@ -1,10 +1,27 @@
 import requests
 import json
 import time
+import random
 from util.config import host_url
 from util.logger import get_logger
 
+
+def _parse_price(val):
+	if isinstance(val, str) and val.startswith('-'):
+		val = val[1:]
+	try:
+		return float(val)
+	except (ValueError, TypeError):
+		return 0.0
+
+
+def _retry_wait(attempt):
+	"""exponential backoff + jitter"""
+	return (attempt + 1) * 2 + random.uniform(0.5, 1.5)
+
+
 # 주식분봉차트조회요청 - 1분봉 기준 여러 봉의 종가 리스트 반환 (최신순)
+# 반환: (prices, volumes, open_prices, highs, cntr_tm_latest)
 def fn_ka10080(stk_cd, count=30, cont_yn='N', next_key='', token=None):
 	log = get_logger()
 	url = host_url + '/api/dostk/chart'
@@ -27,8 +44,8 @@ def fn_ka10080(stk_cd, count=30, cont_yn='N', next_key='', token=None):
 		try:
 			response = requests.post(url, headers=headers, json=params, timeout=10)
 			if response.status_code == 429:
-				wait = (attempt + 1) * 2
-				log.warning(f'[ka10080] {stk_cd} 429 rate limit, {wait}초 후 재시도 ({attempt+1}/3)')
+				wait = _retry_wait(attempt)
+				log.warning(f'[ka10080] {stk_cd} 429 rate limit, {wait:.1f}초 후 재시도 ({attempt+1}/3)')
 				time.sleep(wait)
 				continue
 			response.raise_for_status()
@@ -37,43 +54,39 @@ def fn_ka10080(stk_cd, count=30, cont_yn='N', next_key='', token=None):
 		except Exception as e:
 			if attempt == 2:
 				log.error(f'[ka10080] {stk_cd} 요청 실패: {e}')
-				return [], [], [], []
+				return [], [], [], [], ''
+			wait = _retry_wait(attempt)
 			log.warning(f'[ka10080] {stk_cd} 요청 실패 ({attempt+1}/3): {e}')
-			time.sleep((attempt + 1) * 2)
+			time.sleep(wait)
 	else:
-		return [], [], [], []
+		return [], [], [], [], ''
 
 	chart_data = data.get('stk_min_pole_chart_qry', [])
 	if not chart_data:
-		log.warning(f'[ka10080] {stk_cd} 데이터 없음 (status={response.status_code}) body={json.dumps(data, ensure_ascii=False)}')
+		log.warning(f'[ka10080] {stk_cd} 데이터 없음 body={json.dumps(data, ensure_ascii=False)[:200]}')
 	else:
-		log.debug(f'[ka10080] {stk_cd} {len(chart_data)}봉 수신 (status={response.status_code})')
+		log.debug(f'[ka10080] {stk_cd} {len(chart_data)}봉 수신')
 
-	# 최신순으로 count개의 종가 + 거래량 + 시가 + 고가 리스트 반환
-	prices = []
-	volumes = []
+	prices      = []
+	volumes     = []
 	open_prices = []
-	highs = []
-	for candle in chart_data[:count]:
-		def _parse_price(val):
-			if isinstance(val, str) and val.startswith('-'):
-				val = val[1:]
-			try:
-				return float(val)
-			except (ValueError, TypeError):
-				return 0.0
+	highs       = []
+	cntr_tm_latest = ''
 
+	for i, candle in enumerate(chart_data[:count]):
 		prices.append(_parse_price(candle.get('cur_prc', '0')))
 		open_prices.append(_parse_price(candle.get('open_pric', '0')))
 		highs.append(_parse_price(candle.get('high_pric', '0')))
 
-		trde_qty = candle.get('trde_qty', '0')
 		try:
-			volumes.append(float(str(trde_qty).replace(',', '')))
+			volumes.append(float(str(candle.get('trde_qty', '0')).replace(',', '')))
 		except (ValueError, TypeError):
 			volumes.append(0.0)
 
-	return prices, volumes, open_prices, highs  # 최신봉 기준 내림차순
+		if i == 0:
+			cntr_tm_latest = str(candle.get('cntr_tm', '')).strip()
+
+	return prices, volumes, open_prices, highs, cntr_tm_latest  # 최신봉 기준 내림차순
 
 
 def fn_ka10080_full(stk_cd, count=30, cont_yn='N', next_key='', token=None):
@@ -93,8 +106,8 @@ def fn_ka10080_full(stk_cd, count=30, cont_yn='N', next_key='', token=None):
 		try:
 			response = requests.post(url, headers=headers, json=params, timeout=10)
 			if response.status_code == 429:
-				wait = (attempt + 1) * 2
-				log.warning(f'[ka10080_full] {stk_cd} 429, {wait}초 후 재시도')
+				wait = _retry_wait(attempt)
+				log.warning(f'[ka10080_full] {stk_cd} 429, {wait:.1f}초 후 재시도')
 				time.sleep(wait)
 				continue
 			response.raise_for_status()
@@ -104,7 +117,8 @@ def fn_ka10080_full(stk_cd, count=30, cont_yn='N', next_key='', token=None):
 			if attempt == 2:
 				log.error(f'[ka10080_full] {stk_cd} 요청 실패: {e}')
 				return []
-			time.sleep((attempt + 1) * 2)
+			wait = _retry_wait(attempt)
+			time.sleep(wait)
 	else:
 		return []
 

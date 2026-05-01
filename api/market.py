@@ -140,6 +140,68 @@ def _fetch_index_flu_rt(mrkt_tp, inds_cd, token):
 	return float(val.lstrip('+'))
 
 
+def fn_ka20001_full(mrkt_tp, inds_cd, token=None):
+	"""업종현재가요청 (ka20001) — 지수 당일 OHLC + 등락률 + 시장 breadth.
+	반환: {'cur_prc', 'high_pric', 'low_pric', 'flu_rt', 'rising', 'fall'} — 실패 시 None
+	"""
+	log = get_logger()
+	headers = {
+		'Content-Type': 'application/json;charset=UTF-8',
+		'authorization': f'Bearer {token}',
+		'cont-yn': 'N',
+		'next-key': '',
+		'api-id': 'ka20001',
+	}
+	for attempt in range(3):
+		try:
+			response = requests.post(
+				host_url + '/api/dostk/sect',
+				headers=headers,
+				json={'mrkt_tp': mrkt_tp, 'inds_cd': inds_cd},
+				timeout=5,
+			)
+			if response.status_code == 429:
+				wait = (attempt + 1) * 2
+				log.warning(f'[ka20001_full] {inds_cd} 429, {wait}초 후 재시도 ({attempt+1}/3)')
+				time.sleep(wait)
+				continue
+			response.raise_for_status()
+			data = response.json()
+			break
+		except Exception as e:
+			if attempt == 2:
+				log.warning(f'[ka20001_full] {inds_cd} 요청 실패: {e}')
+				return None
+			time.sleep((attempt + 1) * 2)
+	else:
+		return None
+
+	if data.get('return_code', -1) != 0:
+		return None
+
+	def _r(val):
+		s = str(val).strip()
+		try:
+			return -float(s[1:].replace(',', '')) if s.startswith('-') else float(s.lstrip('+').replace(',', ''))
+		except (ValueError, TypeError):
+			return 0.0
+
+	def _i(val):
+		try:
+			return int(str(val).replace(',', ''))
+		except (ValueError, TypeError):
+			return 0
+
+	return {
+		'cur_prc':   abs(_r(data.get('cur_prc',   '0'))),
+		'high_pric': abs(_r(data.get('high_pric', '0'))),
+		'low_pric':  abs(_r(data.get('low_pric',  '0'))),
+		'flu_rt':    _r(data.get('flu_rt', '0')),
+		'rising':    _i(data.get('rising', '0')),
+		'fall':      _i(data.get('fall',   '0')),
+	}
+
+
 def fn_get_market_index(token=None):
 	"""코스피/코스닥 현재 등락률 반환.
 	반환: (kospi_flu_rt, kosdaq_flu_rt) — 조회 실패 시 해당 값 None

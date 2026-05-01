@@ -1,9 +1,10 @@
 from strategy.indicators import IndicatorsMixin
-from strategy.selector import StockSelectorMixin
+from strategy.mom_selector import StockSelectorMixin
 from strategy.orb_selector import OrbSelectorMixin
 from engine.reporter import ReporterMixin
 from engine.entry import EntryMixin
 from engine.exit import ExitMixin
+from engine.regime import RegimeMixin
 from engine.trader import TraderMixin
 from bot.commands import BotCommandsMixin
 
@@ -14,6 +15,7 @@ class ChatCommand(
 	OrbSelectorMixin,
 	EntryMixin,
 	ExitMixin,
+	RegimeMixin,
 	ReporterMixin,
 	TraderMixin,
 	BotCommandsMixin,
@@ -34,11 +36,16 @@ class ChatCommand(
 		self.peak_profit            = {}     # 트레일링 스탑용 종목별 최고 수익률 {stk_cd: max_pl_rt}
 		self.min_profit             = {}     # MAE 추적: 보유 중 최저 수익률 {stk_cd: min_pl_rt}
 		self.trade_log              = []     # 당일 매매 기록
-		self.current_phase          = None   # 현재 장 구간 (phase transition 감지용)
-		self.early_buy_count        = 0      # 장초반 매수 횟수 (최대 5회)
+		self.orb_ready              = False  # ORB 2차 선정 완료 플래그 (True 이후에만 진입 허용)
 		self.orb_data               = {}     # ORB 고점/저점 캐시 {stk_cd: {'high', 'low', 'gap_up'}}
-		self.orb_buy_count          = 0      # 장초반 ORB 매수 횟수 (최대 2회)
-		self.orb_candidates         = []     # ORB 전용 후보 리스트 (장 시작 1회 선정, 갱신 없음)
+		self.orb_buy_count          = 0      # ORB 매수 횟수 (최대 orb_max_count회)
+		self.orb_candidates         = []     # ORB 전용 후보 리스트 (장 시작 2회 선정 고정)
 		self.last_known_assets      = None   # 총자산 캐시 (kt00004 429 등 일시 실패 시 폴백)
 		self.needs_stock_refresh    = False  # 종목 즉시 보충 플래그 (daily_loss_count 2회 제거 시)
 		self._chart_cache           = {}     # ka10080 캐시 {stk_cd: {'ts': datetime, 'data': tuple}}
+		self._chart_semaphore       = None   # 동시 API 호출 제한 (Semaphore(4), 첫 호출 시 초기화)
+		self._last_candle_time      = {}     # cntr_tm 기반 동일봉 스킵 {stk_cd: cntr_tm}
+		self._sell_signal_count     = {}     # 휩쏘 방지: 연속 매도 신호 횟수 {stk_cd: count}
+		self.market_volatility      = 0.0    # KOSPI*0.4 + KOSDAQ*0.6 ATR(14)/price*100
+		self.market_regime          = 'normal'  # volatile_market / trend_strong / sideways / normal
+		self.regime_task            = None   # Market Regime 갱신 백그라운드 태스크

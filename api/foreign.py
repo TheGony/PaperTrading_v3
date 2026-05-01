@@ -19,11 +19,11 @@ def fn_ka90009(cont_yn='N', next_key='', token=None):
 	}
 
 	params = {
-		'mrkt_tp':    '000',
-		'amt_qty_tp': '1',
-		'qry_dt_tp':  '0',
-		'date':       '',
-		'stex_tp':    '1',
+		'mrkt_tp':    '000',  # 전체 (코스피+코스닥)
+		'amt_qty_tp': '1',    # 금액(천만)
+		'qry_dt_tp':  '1',    # 조회일자 포함
+		'date':       '',     
+		'stex_tp':    '1',    # KRX
 	}
 
 	for attempt in range(3):

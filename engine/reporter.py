@@ -3,7 +3,6 @@ import csv
 import datetime
 import asyncio
 from api.account import fn_kt00004, fn_kt00002, fn_ka01690, fn_ka10072
-from util.market_hour import MarketHour
 from util.tel_send import tel_send
 from util.logger import get_logger
 
@@ -41,10 +40,45 @@ class ReporterMixin:
 		except (ValueError, TypeError):
 			return default
 
+	def _log_candidates(self, entries):
+		"""selector 단계 모든 후보를 candidate_log.csv에 일괄 기록.
+		entries: [{'stock': dict, 'selected': bool, 'reason': str, 'rank': int|None, 'score': float|None, 'rsi': float|None}]
+		"""
+		if not entries:
+			return
+		os.makedirs(self.LOG_DIR, exist_ok=True)
+		path = os.path.join(self.LOG_DIR, 'candidate_log.csv')
+		header = ['날짜', '시간', '종목코드', '종목명', '점수', '거래대금(백만)', '등락률(%)', 'RSI', '외인수급', '선정여부', '제외사유', '선정순위']
+		write_header = not os.path.exists(path) or os.path.getsize(path) == 0
+		now      = datetime.datetime.now()
+		date_str = now.strftime('%Y%m%d')
+		time_str = now.strftime('%H:%M:%S')
+		with open(path, 'a', newline='', encoding='utf-8-sig') as f:
+			w = csv.writer(f)
+			if write_header:
+				w.writerow(header)
+			for entry in entries:
+				s       = entry['stock']
+				is_sel  = entry['selected']
+				score   = entry.get('score')
+				rsi_val = entry.get('rsi')
+				w.writerow([
+					date_str, time_str,
+					s.get('stk_cd', ''),
+					s.get('stk_nm', ''),
+					f"{score:.4f}"               if score   is not None else '',
+					s.get('trde_amt', '')        or '',
+					f"{s.get('flu_rt', 0):+.2f}" if s.get('flu_rt') is not None else '',
+					f"{rsi_val:.1f}"             if rsi_val is not None else '',
+					'○' if s.get('is_foreign') else '×',
+					'선정' if is_sel else '제외',
+					entry.get('reason', ''),
+					entry.get('rank', '') or '',
+				])
+
 	def _log_trade(self, stk_nm, stk_cd, pl_rt, reason, mfe=None, mae=None, snapshot=None):
 		record = {
 			'time':   datetime.datetime.now().strftime('%H:%M:%S'),
-			'phase':  MarketHour.get_market_phase(),
 			'stk_nm': stk_nm,
 			'stk_cd': stk_cd,
 			'pl_rt':  pl_rt,
@@ -74,6 +108,9 @@ class ReporterMixin:
 			'선정점수', '외인기관', 'KOSPI등락(%)', 'KOSDAQ등락(%)', '전략',
 			'갭(%)', 'ORB손절기준(%)', '보유시간(분)', 'ORB오버슈트(%)', '돌파확인(초)',
 			'돌파강도(%)', '추격비율(%)', '거래대금', '거래대금순위', '진입시간(분)',
+			'선정순위', '최근5봉변동성(%)', '1분수익률(%)', '3분수익률(%)',
+			'시장상태', '선정이유', '고점대비위치(%)',
+			'진입VWAP', 'VWAP갭(%)',
 		]
 		if os.path.exists(detail_path):
 			# 기존 헤더 확인 후 컬럼 추가된 경우 파일 재작성
@@ -93,13 +130,11 @@ class ReporterMixin:
 			w = csv.writer(f)
 			if not os.path.exists(detail_path) or os.path.getsize(detail_path) == 0:
 				w.writerow(expected_header)
-			phase_map = {'early': '장초반', 'mid': '장중반', 'late': '장후반'}
 			for t in self.trade_log:
-				mfe_str   = f"{t['mfe']:+.2f}" if t.get('mfe') is not None else ''
-				mae_str   = f"{t['mae']:+.2f}" if t.get('mae') is not None else ''
-				phase_str = phase_map.get(t.get('phase', ''), t.get('phase', ''))
+				mfe_str = f"{t['mfe']:+.2f}" if t.get('mfe') is not None else ''
+				mae_str = f"{t['mae']:+.2f}" if t.get('mae') is not None else ''
 				w.writerow([
-					today, t['time'], phase_str, t['stk_nm'], t['stk_cd'],
+					today, t['time'], t.get('strategy', 'MOMENTUM'), t['stk_nm'], t['stk_cd'],
 					f"{t['pl_rt']:+.2f}", mfe_str, mae_str, t['reason'],
 					t.get('entry_price', ''), t.get('entry_rsi', ''),
 					t.get('entry_flu_rt', ''), t.get('entry_vol_ratio', ''),
@@ -116,6 +151,15 @@ class ReporterMixin:
 					t.get('entry_trde_amt', ''),
 					t.get('entry_trde_amt_rank', ''),
 					t.get('entry_time_min', ''),
+					t.get('entry_rank', ''),
+					f"{t['recent_5bar_vol']:+.2f}" if t.get('recent_5bar_vol') is not None else '',
+					f"{t['pl_1m']:+.2f}"           if t.get('pl_1m')          is not None else '',
+					f"{t['pl_3m']:+.2f}"           if t.get('pl_3m')          is not None else '',
+					t.get('market_state', ''),
+					t.get('selection_reason', ''),
+					f"{t['high_pct']:+.2f}"        if t.get('high_pct')       is not None else '',
+					f"{t['entry_vwap']:.0f}"       if t.get('entry_vwap')     is not None else '',
+					f"{t['vwap_gap_pct']:+.2f}"    if t.get('vwap_gap_pct')   is not None else '',
 				])
 
 		# ── daily_summary.csv (날짜별 1행 누적) ──────────────────────────
@@ -293,9 +337,13 @@ class ReporterMixin:
 			self.daily_loss_count = {}
 			self.entry_time = {}
 			self.entry_snapshot = {}
-			self.orb_data = {}
-			self.orb_buy_count = 0
-			self.orb_candidates = []
+			self.orb_ready              = False
+			self.orb_data               = {}
+			self.orb_buy_count          = 0
+			self.orb_candidates         = []
+			self._last_candle_time      = {}
+			self._chart_cache           = {}
+			self._sell_signal_count     = {}
 			print("장 종료: 선정된 종목 리스트를 초기화했습니다.")
 
 		except Exception as e:

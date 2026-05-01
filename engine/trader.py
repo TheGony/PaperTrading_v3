@@ -20,43 +20,44 @@ class TraderMixin:
 	async def _trading_loop(self):
 		"""트레이딩 로직을 실행하는 백그라운드 루프"""
 		try:
+			# ── 초기화 단계 (단 한 번 실행) ─────────────────────────
 			await self._wait_for_market_start()
 
-			# ORB 후보 선정 1차 (09:01)
+			# ORB 1차 선정 (09:01 기준)
 			await self._get_orb_candidates()
 
-			# MOMENTUM 초기 종목 선정
+			# 09:03까지 대기 (이미 지난 경우 즉시 통과)
+			while datetime.datetime.now().time() < datetime.time(9, 3):
+				await asyncio.sleep(1)
+
+			# ORB 2차 갱신 (09:03) — 루프 내에서는 절대 실행하지 않음
+			await self._get_orb_candidates(is_refresh=True)
+			self.orb_ready = True
+
+			# MOMENTUM 초기 종목 선정 (ORB 완료 이후)
 			await self._select_initial_stocks()
 
+			# ── 실시간 루프 (5초 주기) ─────────────────────────────
 			last_refresh_time = datetime.datetime.now()
-			# 09:03 이미 지난 경우 ORB 2차 갱신 불필요
-			orb_refreshed = last_refresh_time.time() >= datetime.time(9, 3)
 
 			while self.is_running and MarketHour.is_market_open_time():
-				loop_start = datetime.datetime.now()
-				now = loop_start
+				now = datetime.datetime.now()
 
-				# ── ORB 2차 갱신 (09:03) ────────────────────────────
-				if not orb_refreshed and now.time() >= datetime.time(9, 3):
-					await self._get_orb_candidates(is_refresh=True)
-					orb_refreshed = True
-
-				# ── MOMENTUM 즉시 보충 (daily_loss_count 2회 제거 후) ──
-				if self.needs_stock_refresh:
+				# MOMENTUM 즉시 보충
+				if self.needs_stock_refresh and MarketHour.is_entry_allowed():
 					self.needs_stock_refresh = False
-					if MarketHour.is_entry_allowed():
-						await self._refresh_selected_stocks()
-						last_refresh_time = now
+					await self._refresh_selected_stocks()
+					last_refresh_time = now
 
-				# ── MOMENTUM 주기 갱신 (5분) ─────────────────────────
-				elif (now - last_refresh_time).total_seconds() >= self.STOCK_REFRESH_INTERVAL and MarketHour.is_entry_allowed():
+				# MOMENTUM 주기 갱신 (5분)
+				elif (now - last_refresh_time).total_seconds() >= self.STOCK_REFRESH_INTERVAL \
+						and MarketHour.is_entry_allowed():
 					await self._refresh_selected_stocks()
 					last_refresh_time = now
 
 				await self._check_charts_and_trade()
 				self.last_chart_check_time = now
-				elapsed = (datetime.datetime.now() - loop_start).total_seconds()
-				await asyncio.sleep(max(0, 60 - elapsed))
+				await asyncio.sleep(5)
 
 		except asyncio.CancelledError:
 			print("트레이딩 루프가 중지되었습니다")
@@ -104,6 +105,7 @@ class TraderMixin:
 
 			# 프로세스 시작
 			self.is_running = True
+			self.orb_ready = False
 			self.selected_stocks = []
 			self.selected_stocks_names = {}
 			self.last_chart_check_time = None
@@ -112,6 +114,7 @@ class TraderMixin:
 			# 백그라운드 태스크 시작
 			self.trading_task      = asyncio.create_task(self._trading_loop())
 			self.profit_check_task = asyncio.create_task(self._profit_check_loop())
+			self.regime_task       = asyncio.create_task(self._regime_loop())
 
 			tel_send("✅ 트레이딩 프로세스가 시작되었습니다")
 			return True
@@ -147,12 +150,23 @@ class TraderMixin:
 				except asyncio.CancelledError:
 					pass
 
-			self.selected_stocks = []
-			self.selected_stocks_names = {}
-			self.last_chart_check_time = None
-			self.orb_data = {}
-			self.orb_buy_count = 0
-			self.orb_candidates = []
+			if self.regime_task and not self.regime_task.done():
+				self.regime_task.cancel()
+				try:
+					await self.regime_task
+				except asyncio.CancelledError:
+					pass
+
+			self.orb_ready              = False
+			self.selected_stocks        = []
+			self.selected_stocks_names  = {}
+			self.last_chart_check_time  = None
+			self.orb_data               = {}
+			self.orb_buy_count          = 0
+			self.orb_candidates         = []
+			self._sell_signal_count     = {}
+			self.market_volatility      = 0.0
+			self.market_regime          = 'normal'
 
 			tel_send("✅ 트레이딩 프로세스가 중지되었습니다")
 			return True
