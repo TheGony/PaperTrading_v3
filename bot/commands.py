@@ -290,7 +290,7 @@ class BotCommandsMixin:
 			brt         = get_setting('buy_ratio', 8.0)
 			top_n       = get_setting('stock_count', 10)
 
-			msg_cmd = f"""🤖 [PaperTrading v2 명령어 가이드]
+			msg_cmd = f"""🤖 [PaperTrading v3 명령어 가이드]
 
 [기본 명령어]
 • start  - 매매 시작 (장 외이면 장 시작 시 자동 실행)
