@@ -21,7 +21,7 @@ def _retry_wait(attempt):
 
 
 # 주식분봉차트조회요청 - 1분봉 기준 여러 봉의 종가 리스트 반환 (최신순)
-# 반환: (prices, volumes, open_prices, highs, cntr_tm_latest)
+# 반환: (prices, volumes, open_prices, highs, lows, cntr_tm_latest)
 def fn_ka10080(stk_cd, count=30, cont_yn='N', next_key='', token=None):
 	log = get_logger()
 	url = host_url + '/api/dostk/chart'
@@ -71,12 +71,14 @@ def fn_ka10080(stk_cd, count=30, cont_yn='N', next_key='', token=None):
 	volumes     = []
 	open_prices = []
 	highs       = []
+	lows        = []
 	cntr_tm_latest = ''
 
 	for i, candle in enumerate(chart_data[:count]):
 		prices.append(_parse_price(candle.get('cur_prc', '0')))
 		open_prices.append(_parse_price(candle.get('open_pric', '0')))
 		highs.append(_parse_price(candle.get('high_pric', '0')))
+		lows.append(_parse_price(candle.get('low_pric', '0')))
 
 		try:
 			volumes.append(float(str(candle.get('trde_qty', '0')).replace(',', '')))
@@ -86,7 +88,7 @@ def fn_ka10080(stk_cd, count=30, cont_yn='N', next_key='', token=None):
 		if i == 0:
 			cntr_tm_latest = str(candle.get('cntr_tm', '')).strip()
 
-	return prices, volumes, open_prices, highs, cntr_tm_latest  # 최신봉 기준 내림차순
+	return prices, volumes, open_prices, highs, lows, cntr_tm_latest  # 최신봉 기준 내림차순
 
 
 def fn_ka10080_full(stk_cd, count=30, cont_yn='N', next_key='', token=None):

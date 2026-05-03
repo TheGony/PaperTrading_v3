@@ -56,6 +56,12 @@ def fn_ka10023(count=20, cont_yn='N', next_key='', token=None):
 	if not raw_list:
 		return []
 
+	def _to_int(val):
+		try:
+			return int(str(val).replace('+', '').replace(',', '').split('.')[0])
+		except (ValueError, TypeError):
+			return 0
+
 	candidates = []
 	for item in raw_list:
 		try:
@@ -64,14 +70,23 @@ def fn_ka10023(count=20, cont_yn='N', next_key='', token=None):
 			stk_cd   = item.get('stk_cd', '').replace('A', '')
 			stk_nm   = item.get('stk_nm', '')
 
-			# 필터: 상승 중(양봉) + 전일 대비 거래량 2배 이상
-			if flu_rt > 0 and sdnin_rt >= 100:
-				candidates.append({
-					'stk_cd':   stk_cd,
-					'stk_nm':   stk_nm,
-					'flu_rt':   flu_rt,
-					'sdnin_rt': sdnin_rt,
-				})
+			# 최소 필터: 상승 중(양봉)만 통과 (sdnin_rt 하한 제거)
+			if flu_rt <= 0:
+				continue
+
+			now_trde_qty  = _to_int(item.get('now_trde_qty')  or item.get('trde_qty',      '0'))
+			prev_trde_qty = _to_int(item.get('pred_trde_qty') or item.get('prev_trde_qty', '0'))
+			trde_amt      = float(str(item.get('trde_prica') or item.get('trde_amt', '0')).replace(',', '') or '0')
+
+			candidates.append({
+				'stk_cd':        stk_cd,
+				'stk_nm':        stk_nm,
+				'flu_rt':        flu_rt,
+				'sdnin_rt':      sdnin_rt,
+				'now_trde_qty':  now_trde_qty,
+				'prev_trde_qty': prev_trde_qty,
+				'trde_amt':      trde_amt,
+			})
 		except (ValueError, TypeError):
 			continue
 

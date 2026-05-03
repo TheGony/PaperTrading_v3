@@ -78,12 +78,22 @@ def fn_kt00002(token=None):
 		'end_dt': today,
 	}
 
-	try:
-		response = requests.post(host_url + '/api/dostk/acnt', headers=headers, json=body, timeout=10)
-		response.raise_for_status()
-		data = response.json()
-	except Exception as e:
-		log.error(f'[kt00002] 요청 실패: {e}')
+	for attempt in range(3):
+		try:
+			response = requests.post(host_url + '/api/dostk/acnt', headers=headers, json=body, timeout=10)
+			if response.status_code == 429:
+				wait = (attempt + 1) * 2
+				log.warning(f'[kt00002] 429 rate limit, {wait}초 후 재시도 ({attempt+1}/3)')
+				time.sleep(wait)
+				continue
+			response.raise_for_status()
+			data = response.json()
+			break
+		except Exception as e:
+			log.error(f'[kt00002] 요청 실패: {e}')
+			return '0', '0'
+	else:
+		log.error('[kt00002] 429 재시도 3회 초과')
 		return '0', '0'
 
 	log.debug(f'[kt00002] status={response.status_code} body={json.dumps(data, ensure_ascii=False)}')
@@ -101,6 +111,7 @@ def fn_kt00002(token=None):
 
 # 예수금상세현황요청 (kt00001)
 def fn_kt00001(cont_yn='N', next_key='', token=None):
+	log = get_logger()
 	url = host_url + '/api/dostk/acnt'
 
 	params = {
@@ -115,20 +126,25 @@ def fn_kt00001(cont_yn='N', next_key='', token=None):
 		'api-id': 'kt00001', # TR명
 	}
 
-	try:
-		response = requests.post(url, headers=headers, json=params, timeout=10)
-		response.raise_for_status()
-		data = response.json()
-	except Exception as e:
-		print(f'[kt00001] 요청 실패: {e}')
-		return None
+	for attempt in range(3):
+		try:
+			response = requests.post(url, headers=headers, json=params, timeout=10)
+			if response.status_code == 429:
+				wait = (attempt + 1) * 2
+				log.warning(f'[kt00001] 429 rate limit, {wait}초 후 재시도 ({attempt+1}/3)')
+				time.sleep(wait)
+				continue
+			response.raise_for_status()
+			data = response.json()
+			entry = data.get('entr')
+			log.debug(f'[kt00001] 예수금={entry}')
+			return entry
+		except Exception as e:
+			log.error(f'[kt00001] 요청 실패: {e}')
+			return None
 
-	print('Code:', response.status_code)
-	print('Body:', json.dumps(data, indent=4, ensure_ascii=False))
-
-	entry = data.get('entr')
-	print('예수금: ', entry)
-	return entry
+	log.error('[kt00001] 429 재시도 3회 초과')
+	return None
 
 
 # 일별잔고수익률 (ka01690)

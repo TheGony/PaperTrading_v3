@@ -23,18 +23,18 @@ class TraderMixin:
 			# ── 초기화 단계 (단 한 번 실행) ─────────────────────────
 			await self._wait_for_market_start()
 
-			# ORB 1차 선정 (09:01 기준)
-			await self._get_orb_candidates()
-
-			# 09:03까지 대기 (이미 지난 경우 즉시 통과)
-			while datetime.datetime.now().time() < datetime.time(9, 3):
+			# ORB 1차 선정 (09:05 — 09:00~09:04 Range 5봉 확립 후)
+			while datetime.datetime.now().time() < datetime.time(9, 5):
 				await asyncio.sleep(1)
-
-			# ORB 2차 갱신 (09:03) — 루프 내에서는 절대 실행하지 않음
-			await self._get_orb_candidates(is_refresh=True)
+			await self._get_orb_candidates()
 			self.orb_ready = True
 
-			# MOMENTUM 초기 종목 선정 (ORB 완료 이후)
+			# ORB 2차 갱신 (09:10)
+			while datetime.datetime.now().time() < datetime.time(9, 10):
+				await asyncio.sleep(1)
+			await self._get_orb_candidates(is_refresh=True)
+
+			# MOMENTUM 초기 종목 선정 (ORB 2차 갱신 완료 이후)
 			await self._select_initial_stocks()
 
 			# ── 실시간 루프 (5초 주기) ─────────────────────────────

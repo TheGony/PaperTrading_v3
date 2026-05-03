@@ -1,10 +1,13 @@
 import requests
 import json
+import time
 from util.config import host_url
 from util.logger import get_logger
 
 # 주식 매수주문 (kt10000) - 시장가
 def fn_kt10000(stk_cd, ord_qty, ord_uv, cont_yn='N', next_key='', token=None):
+	log = get_logger()
+
 	# 1. 요청할 API URL
 	endpoint = '/api/dostk/ordr'
 	url = host_url + endpoint
@@ -28,21 +31,26 @@ def fn_kt10000(stk_cd, ord_qty, ord_uv, cont_yn='N', next_key='', token=None):
 		'cond_uv': '', # 조건단가
 	}
 
-	# 4. http POST 요청 (타임아웃 + 예외처리)
-	try:
-		response = requests.post(url, headers=headers, json=params, timeout=10)
-		response.raise_for_status()
-		data = response.json()
+	# 4. http POST 요청 (429 재시도 최대 3회, 일반 예외는 즉시 반환)
+	for attempt in range(3):
+		try:
+			response = requests.post(url, headers=headers, json=params, timeout=10)
+			if response.status_code == 429:
+				wait = (attempt + 1) * 2
+				log.warning(f'[kt10000] {stk_cd} 429 rate limit, {wait}초 후 재시도 ({attempt+1}/3)')
+				time.sleep(wait)
+				continue
+			response.raise_for_status()
+			data = response.json()
+			return_code = data.get('return_code', -1)
+			log.info(f'[kt10000] {stk_cd} {ord_qty}주 매수 요청 → return_code={return_code}')
+			return return_code
+		except Exception as e:
+			log.error(f'[kt10000] {stk_cd} 매수 요청 실패: {e}')
+			return -1
 
-		# 5. 응답 상태 코드와 데이터 출력
-		print('Code:', response.status_code)
-		print('Header:', json.dumps({key: response.headers.get(key) for key in ['next-key', 'cont-yn', 'api-id']}, indent=4, ensure_ascii=False))
-		print('Body:', json.dumps(data, indent=4, ensure_ascii=False))  # JSON 응답을 파싱하여 출력
-
-		return data.get('return_code', -1)
-	except Exception as e:
-		get_logger().error(f'[kt10000] {stk_cd} 매수 요청 실패: {e}')
-		return -1
+	log.error(f'[kt10000] {stk_cd} 429 재시도 3회 초과')
+	return -1
 
 
 # 주식 매도주문 (kt10001) - 시장가
@@ -72,20 +80,23 @@ def fn_kt10001(stk_cd, ord_qty, cont_yn='N', next_key='', token=None):
 		'cond_uv': '', # 조건단가
 	}
 
-	# 4. http POST 요청 (타임아웃 + 예외처리)
-	try:
-		response = requests.post(url, headers=headers, json=params, timeout=10)
-		response.raise_for_status()
-		data = response.json()
+	# 4. http POST 요청 (429 재시도 최대 3회, 일반 예외는 즉시 반환)
+	for attempt in range(3):
+		try:
+			response = requests.post(url, headers=headers, json=params, timeout=10)
+			if response.status_code == 429:
+				wait = (attempt + 1) * 2
+				log.warning(f'[kt10001] {stk_cd} 429 rate limit, {wait}초 후 재시도 ({attempt+1}/3)')
+				time.sleep(wait)
+				continue
+			response.raise_for_status()
+			data = response.json()
+			return_code = data.get('return_code', -1)
+			log.info(f'[kt10001] {stk_cd} {ord_qty}주 매도 요청 → return_code={return_code}')
+			return return_code
+		except Exception as e:
+			log.error(f'[kt10001] {stk_cd} 매도 요청 실패: {e}')
+			return -1
 
-		# 5. 응답 상태 코드와 데이터 출력
-		print('Code:', response.status_code)
-		print('Header:', json.dumps({key: response.headers.get(key) for key in ['next-key', 'cont-yn', 'api-id']}, indent=4, ensure_ascii=False))
-		print('Body:', json.dumps(data, indent=4, ensure_ascii=False))
-
-		return_code = data.get('return_code', -1)
-		log.info(f'[kt10001] {stk_cd} {ord_qty}주 매도 요청 → return_code={return_code}')
-		return return_code
-	except Exception as e:
-		log.error(f'[kt10001] {stk_cd} 매도 요청 실패: {e}')
-		return -1
+	log.error(f'[kt10001] {stk_cd} 429 재시도 3회 초과')
+	return -1

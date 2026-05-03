@@ -52,13 +52,13 @@ class OrbSelectorMixin:
 		for s in pool:
 			stk_cd  = s['stk_cd']
 			candles = await asyncio.get_event_loop().run_in_executor(
-				None, fn_ka10080_full, stk_cd, 15, 'N', '', self.token
+				None, fn_ka10080_full, stk_cd, 20, 'N', '', self.token
 			)
 			await asyncio.sleep(0.2)
 			if not candles:
 				continue
 
-			# 09:00~09:10 봉 추출
+			# 09:00~09:10 1분봉 추출 (최대 10개)
 			open_candles = [c for c in candles if '0900' <= _hhmm(c['cntr_tm']) <= '0910']
 			if not open_candles:
 				continue
@@ -71,57 +71,100 @@ class OrbSelectorMixin:
 				continue
 			gap = (day_open - prev_close) / prev_close * 100
 
-			# 갭 하락 제외
-			if gap <= 0:
+			cur_prc = candles[0]['cur_prc']
+
+			# 갭 하락 처리: -1% 미만은 제외, -1~0% 구간은 현재가가 시가 회복 시만 허용
+			if gap < -1.0:
+				continue
+			if gap <= 0 and cur_prc <= day_open:
 				continue
 
 			# 시가 대비 -2% 이상 눌림 제외
-			cur_prc = candles[0]['cur_prc']
 			if cur_prc < day_open * 0.98:
 				continue
 
+			# ── 1분봉 세부 분석 ─────────────────────────────────────
 			latest_high      = candles[0]['high_pric']
 			upper_tail_ratio = (latest_high - cur_prc) / latest_high if latest_high > 0 else 0
 			bearish_count    = sum(1 for c in open_candles if c['cur_prc'] < c['open_pric'])
 
-			# 소프트 패널티
+			# 10분 구간 최고가 대비 현재가 위치 (1에 가까울수록 고점 유지)
+			max_high_10    = max((c['high_pric'] for c in open_candles), default=cur_prc)
+			price_position = cur_prc / max_high_10 if max_high_10 > 0 else 1.0
+
+			# 연속 양봉 여부: 가장 최근 3봉이 모두 양봉이면 True
+			recent_3      = open_candles[:3]  # open_candles는 최신순
+			consec_bull   = len(recent_3) == 3 and all(c['cur_prc'] >= c['open_pric'] for c in recent_3)
+
+			# 최근 3분 거래량 합계 (모멘텀 보조 지표)
+			vol_3m = sum(c.get('trde_qty', 0) for c in candles[:3])
+
+			# ── 소프트 패널티 계산 ───────────────────────────────────
 			penalty = 0.0
 			if not (1.5 <= gap <= 8.0):
 				penalty += 0.2
 			if upper_tail_ratio > 0.05:
 				penalty += 0.2
-			if bearish_count >= 2:
+			if bearish_count >= 4:    # 강화: 4개 이상이면 패널티 가중
+				penalty += 0.4
+			elif bearish_count >= 2:
 				penalty += 0.2
+			if price_position < 0.92:  # 10분 고점 대비 8% 이상 밀림
+				penalty += 0.3
+			elif price_position < 0.95:
+				penalty += 0.15
+			if consec_bull:            # 연속 양봉 보너스
+				penalty -= 0.1
+
+			# ORB 범위 데이터: 09:00~09:04 봉으로 사전 계산 (_try_orb_entry 재활용)
+			orb_sub      = [c for c in open_candles if _hhmm(c['cntr_tm']) <= '0904']
+			orb_candle_n = len(orb_sub)
+			if orb_sub:
+				orb_high_pre = max(c['high_pric'] for c in orb_sub)
+				orb_low_pre  = min(c['low_pric']  for c in orb_sub)
+			else:
+				orb_high_pre = None
+				orb_low_pre  = None
+			gap_up = gap > 0 or (gap >= -1.0 and cur_prc > day_open)
 
 			# 거래대금: ka10032 우선, 없으면 ka10030 값 사용
 			trde_prica = s.get('trde_prica', 0) or trde_amt_map.get(stk_cd, 0)
 
 			candidates.append({
-				'stk_cd':     stk_cd,
-				'stk_nm':     s.get('stk_nm', stk_cd),
-				'gap':        round(gap, 2),
-				'flu_rt':     s.get('flu_rt', 0),
-				'trde_prica': trde_prica,
-				'trde_qty':   vol_map.get(stk_cd, 0),
-				'penalty':    penalty,
-				'strategy':   'ORB',
+				'stk_cd':        stk_cd,
+				'stk_nm':        s.get('stk_nm', stk_cd),
+				'gap':           round(gap, 2),
+				'flu_rt':        s.get('flu_rt', 0),
+				'trde_prica':    trde_prica,
+				'trde_qty':      vol_map.get(stk_cd, 0),
+				'vol_3m':        vol_3m,
+				'price_position': round(price_position, 3),
+				'consec_bull':   consec_bull,
+				'penalty':       penalty,
+				'strategy':      'ORB',
+				# ORB 범위 캐시 (_try_orb_entry 중복 API 호출 방지)
+				'orb_high':      orb_high_pre,
+				'orb_low':       orb_low_pre,
+				'gap_up':        gap_up,
+				'day_open':      day_open,
+				'orb_candle_n':  orb_candle_n,
 			})
 
 		# ── 5. 스코어링 ───────────────────────────────────────────
-		# score = today_volume_norm*0.40 + trde_amt_norm*0.30 + flu_rt_norm*0.30 - penalty
+		# score = trde_amt_norm*0.50 + today_volume_norm*0.20 + flu_rt_norm*0.30 - penalty
 		if candidates:
 			max_trde = max(c['trde_prica'] for c in candidates) or 1
 			max_vol  = max(c['trde_qty']   for c in candidates) or 1
-			max_flu  = max((c['flu_rt']     for c in candidates if c['flu_rt']     > 0), default=1) or 1
+			max_flu  = max((c['flu_rt']     for c in candidates if c['flu_rt'] > 0), default=1) or 1
 
 			for c in candidates:
 				trde_amt_norm     = math.log(max(c['trde_prica'], 1)) / math.log(max(max_trde, 2))
 				today_volume_norm = math.log(max(c['trde_qty'],   1)) / math.log(max(max_vol,  2))
-				flu_rt_norm       = max(c['flu_rt'],     0) / max_flu
+				flu_rt_norm       = max(c['flu_rt'], 0) / max_flu
 
 				c['score'] = (
-					today_volume_norm * 0.40 +
-					trde_amt_norm     * 0.30 +
+					trde_amt_norm     * 0.50 +
+					today_volume_norm * 0.20 +
 					flu_rt_norm       * 0.30
 					- c['penalty']
 				)
@@ -161,6 +204,18 @@ class OrbSelectorMixin:
 
 		candidates.sort(key=lambda x: x['score'], reverse=True)
 		self.orb_candidates = candidates[:self.ORB_CANDIDATES_MAX]
+
+		# ── orb_data 선제 구축: _try_orb_entry의 fn_ka10080_full 중복 호출 방지 ──
+		for c in self.orb_candidates:
+			cd = c['stk_cd']
+			if cd not in self.orb_data and c.get('orb_high') is not None:
+				self.orb_data[cd] = {
+					'high':     c['orb_high'],
+					'low':      c['orb_low'],
+					'gap_up':   c['gap_up'],
+					'day_open': c['day_open'],
+				}
+				log.info(f'[ORB] {cd} orb_data 선제 구축: high={c["orb_high"]:.0f} low={c["orb_low"]:.0f}')
 
 		names = ', '.join(
 			f"{c['stk_nm']}({c['stk_cd']}) gap={c['gap']:+.1f}%" if c['gap'] is not None

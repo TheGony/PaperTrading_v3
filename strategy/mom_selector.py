@@ -1,5 +1,6 @@
 import asyncio
 import math
+import datetime
 from api.ranking import fn_ka10030, fn_ka10032, fn_ka10023
 from api.foreign import fn_ka90009
 from api.account import fn_kt00004
@@ -57,11 +58,42 @@ class StockSelectorMixin:
 			asyncio.get_event_loop().run_in_executor(None, fn_ka10030, 30, 'N', '', self.token),
 			asyncio.get_event_loop().run_in_executor(None, fn_ka10023, 30, 'N', '', self.token),
 		)
-		seen = {}
-		for s in (raw_vol or []) + (raw_surge or []):
+
+		# ka10023(급증) 우선 수집 → ka10030(거래량)으로 trde_qty/trde_amt 보충
+		# 급증 출처 태그(_from_surge)로 fallback 우선순위 결정
+		surge_set: set = set()
+		seen: dict = {}
+		for s in (raw_surge or []):
 			cd = s.get('stk_cd', '')
-			if cd and cd not in seen:
-				seen[cd] = s
+			if cd:
+				seen[cd] = dict(s, _from_surge=True)
+				surge_set.add(cd)
+		for s in (raw_vol or []):
+			cd = s.get('stk_cd', '')
+			if not cd:
+				continue
+			if cd in seen:
+				# ka10023 레코드에 거래대금·거래량 보충 (없는 경우만)
+				rec = seen[cd]
+				if not rec.get('trde_qty'):
+					rec['trde_qty'] = s.get('trde_qty', 0)
+				if not rec.get('trde_amt'):
+					rec['trde_amt'] = s.get('trde_amt', 0)
+			else:
+				seen[cd] = dict(s, _from_surge=False)
+
+		# ka10030-only 종목: prev_trde_qty가 있으면 시간 비례 sdnin_rt 추정
+		market_open  = datetime.datetime.now().replace(hour=9, minute=0, second=0, microsecond=0)
+		elapsed_mins = max((datetime.datetime.now() - market_open).total_seconds() / 60, 1)
+		time_ratio   = elapsed_mins / 390  # 전체 장 시간(390분) 대비 경과 비율
+		for cd, rec in seen.items():
+			if cd not in surge_set and rec.get('sdnin_rt', 0) == 0:
+				prev_qty = rec.get('prev_trde_qty', 0)
+				curr_qty = rec.get('trde_qty', 0) or rec.get('now_trde_qty', 0)
+				if prev_qty > 0 and curr_qty > 0:
+					projected = curr_qty / time_ratio
+					rec['sdnin_rt'] = round(projected / prev_qty * 100, 1)
+
 		raw = list(seen.values())
 		if not raw:
 			return []
@@ -121,6 +153,7 @@ class StockSelectorMixin:
 			max_flu    = max(flu_list)
 			min_flu    = min(flu_list)
 			flu_range  = (max_flu - min_flu) or 1
+			# 풀 내 상대 최댓값 기준 정규화 (장 초반 낮은 절댓값도 올바르게 반영)
 			max_sdnin  = max(sdnin_list) or 1
 
 			for c in candidates:
@@ -145,10 +178,15 @@ class StockSelectorMixin:
 
 		scored.sort(key=lambda x: x['score'], reverse=True)
 
-		# fallback: 차트 미통과 종목을 거래대금+등락률 기준으로 보충
+		# fallback: 차트 미통과 종목 보충 — ka10023 급증 종목 우선
 		if len(scored) < stock_count:
 			scored_cds = {s['stk_cd'] for s in scored}
-			fb_pool = [s for s in pool if s['stk_cd'] not in scored_cds and s.get('flu_rt', 0) > 0]
+			eligible   = [s for s in pool if s['stk_cd'] not in scored_cds and s.get('flu_rt', 0) > 0]
+			# 급증 출처(_from_surge) 종목을 앞으로 배치
+			fb_pool = (
+				[s for s in eligible if s.get('_from_surge')]
+				+ [s for s in eligible if not s.get('_from_surge')]
+			)
 			if fb_pool:
 				fb_amt       = [s.get('trde_amt', 0) for s in fb_pool]
 				fb_flu       = [s.get('flu_rt', 0)   for s in fb_pool]

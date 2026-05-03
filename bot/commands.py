@@ -59,7 +59,7 @@ class BotCommandsMixin:
 			# ── ORB 후보 ──────────────────────────────────────
 			orb_list = self.orb_candidates or []
 			if orb_list:
-				msg += f"\n\n📌 [ORB 후보] ({len(orb_list)}종목, 09:01 1차·09:03 2차 확정)\n"
+				msg += f"\n\n📌 [ORB 후보] ({len(orb_list)}종목, 09:05 1차·09:10 2차 확정)\n"
 				for c in orb_list:
 					trde     = c.get('trde_prica', 0)
 					trde_str = f"{trde / 10000:.0f}억" if trde >= 10000 else f"{trde:.0f}백만"
@@ -307,7 +307,7 @@ chart {{x}} {{y}} 데드크로스 MA    (현재: MA{chart_short}/MA{chart_long})
 
 [전략 요약]
 ORB      09:05~09:30 / 갭상승 돌파 / 손절 max(ORB저점,-2%) / 트레일링 1.0~1.8%
-MOM      09:03~15:20 / 5봉 고점 돌파 / 손절 -3% / 트레일링 2.0~3.2%
+MOM      09:10~15:20 / 5봉 고점 돌파 / 손절 -3% / 트레일링 2.0~3.2%
 공통     조기손절 2분이내 -1.2% / 쿨다운 20분 / 당일 2회 손절 종목 제외"""
 
 			tel_send(msg_cmd)
