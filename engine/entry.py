@@ -159,9 +159,8 @@ class EntryMixin:
 					if None in (ma_short_curr, ma_long_curr, ma_short_prev, ma_long_prev):
 						continue
 
-					rsi      = self._calc_rsi(prices, rsi_period)
-					prev_rsi = self._calc_rsi(prices[1:], rsi_period)
-					rsi_str  = f"{rsi:.1f}" if rsi is not None else "N/A"
+					rsi     = self._calc_rsi(prices, rsi_period)
+					rsi_str = f"{rsi:.1f}" if rsi is not None else "N/A"
 
 					dead_cross = (ma_short_prev >= ma_long_prev) and (ma_short_curr < ma_long_curr)
 
@@ -257,10 +256,6 @@ class EntryMixin:
 					if rsi > 70:
 						print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: RSI {rsi_str} > 70 (과열) - 매수 스킵")
 						continue
-					if prev_rsi is not None and rsi < prev_rsi * 0.98:
-						print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: RSI 하락 중 ({prev_rsi:.1f}→{rsi_str}) - 매수 스킵")
-						continue
-
 					# ── 당일 2회 손실 종목 진입 금지 ────────────────
 					if self.daily_loss_count.get(stk_cd, 0) >= 2:
 						print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: 당일 손실 {self.daily_loss_count[stk_cd]}회 - 금일 거래 금지")
@@ -272,14 +267,10 @@ class EntryMixin:
 						print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: 과열(flu_rt={flu_rt:.1f}% > 23%) - 매수 스킵")
 						continue
 
-					# ── 고점 근접 필터 ──────────────────────────────────────
+					# ── 고점 대비 위치 계산 (entry_snapshot 기록용) ────────
 					intraday_high = max(highs) if highs else None
 					high_pct      = None
 					if intraday_high and intraday_high > 0:
-						if current_price >= intraday_high * 0.98:
-							if curr_vol <= avg_vol_5 * 1.7:
-								print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd}: 고점({intraday_high:.0f}) 근접+거래량 미달 - 매수 스킵")
-								continue
 						high_pct = round((current_price / intraday_high - 1) * 100, 2)
 
 					# ── 돌파 유지 확인 ────────────────────────────────────────
