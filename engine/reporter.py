@@ -91,6 +91,7 @@ class ReporterMixin:
 		if snapshot:
 			record.update(snapshot)
 		self.trade_log.append(record)
+		self._append_trade_to_csv(record)
 		if pl_rt < 0:
 			self.daily_loss_count[stk_cd] = self.daily_loss_count.get(stk_cd, 0) + 1
 			if self.daily_loss_count[stk_cd] >= 2 and stk_cd in self.selected_stocks:
@@ -98,10 +99,9 @@ class ReporterMixin:
 				self.needs_stock_refresh = True
 				get_logger().info(f'[종목제외] {stk_cd} 당일 손실 2회 → 선정 목록 즉시 제거, 보충 갱신 예약')
 
-	def _write_csv(self, today, summary):
+	def _append_trade_to_csv(self, t):
+		"""매도 즉시 trade_detail.csv에 단건 기록 — 재시작해도 데이터 유지"""
 		os.makedirs(self.LOG_DIR, exist_ok=True)
-
-		# ── trade_detail.csv (매매 건별 누적) ─────────────────────────────
 		detail_path = os.path.join(self.LOG_DIR, 'trade_detail.csv')
 		expected_header = [
 			'날짜', '시간', '구간', '종목명', '종목코드',
@@ -114,8 +114,8 @@ class ReporterMixin:
 			'시장상태', '선정이유', '고점대비위치(%)',
 			'진입VWAP', 'VWAP갭(%)',
 		]
-		if os.path.exists(detail_path):
-			# 기존 헤더 확인 후 컬럼 추가된 경우 파일 재작성
+		# 헤더 마이그레이션 (스키마 변경 시)
+		if os.path.exists(detail_path) and os.path.getsize(detail_path) > 0:
 			with open(detail_path, 'r', encoding='utf-8-sig') as f:
 				existing_header = next(csv.reader(f), [])
 			if existing_header != expected_header:
@@ -125,44 +125,70 @@ class ReporterMixin:
 					w2 = csv.writer(f)
 					w2.writerow(expected_header)
 					for row in rows[1:]:
-						# 기존 행은 부족한 컬럼을 빈값으로 채움
 						padded = row + [''] * (len(expected_header) - len(row))
 						w2.writerow(padded[:len(expected_header)])
+
+		today   = datetime.datetime.now().strftime('%Y%m%d')
+		mfe_str = f"{t['mfe']:+.2f}" if t.get('mfe') is not None else ''
+		mae_str = f"{t['mae']:+.2f}" if t.get('mae') is not None else ''
+		row = [
+			today, t['time'], t.get('strategy', 'MOMENTUM'), t['stk_nm'], t['stk_cd'],
+			f"{t['pl_rt']:+.2f}", mfe_str, mae_str, t['reason'],
+			t.get('entry_price', ''), t.get('entry_rsi', ''),
+			t.get('entry_flu_rt', ''), t.get('entry_vol_ratio', ''),
+			t.get('entry_score', ''), '○' if t.get('is_foreign') else '×',
+			t.get('kospi_flu', ''), t.get('kosdaq_flu', ''),
+			t.get('strategy', 'MOMENTUM'),
+			f"{t['orb_gap']:+.2f}"           if t.get('orb_gap')          is not None else '',
+			f"{t['orb_stop_pct']:+.2f}"       if t.get('orb_stop_pct')    is not None else '',
+			t.get('held_minutes', ''),
+			f"{t['orb_overshoot']:+.2f}"      if t.get('orb_overshoot')   is not None else '',
+			t.get('confirm_secs', ''),
+			f"{t['breakout_strength']:+.2f}"  if t.get('breakout_strength') is not None else '',
+			f"{t['chase_pct']:+.2f}"          if t.get('chase_pct')        is not None else '',
+			t.get('entry_trde_amt', ''),
+			t.get('entry_trde_amt_rank', ''),
+			t.get('entry_time_min', ''),
+			t.get('entry_rank', ''),
+			f"{t['recent_5bar_vol']:+.2f}"    if t.get('recent_5bar_vol') is not None else '',
+			f"{t['pl_1m']:+.2f}"              if t.get('pl_1m')           is not None else '',
+			f"{t['pl_3m']:+.2f}"              if t.get('pl_3m')           is not None else '',
+			t.get('market_state', ''),
+			t.get('selection_reason', ''),
+			f"{t['high_pct']:+.2f}"           if t.get('high_pct')        is not None else '',
+			f"{t['entry_vwap']:.0f}"          if t.get('entry_vwap')      is not None else '',
+			f"{t['vwap_gap_pct']:+.2f}"       if t.get('vwap_gap_pct')    is not None else '',
+		]
+		write_header = not os.path.exists(detail_path) or os.path.getsize(detail_path) == 0
 		with open(detail_path, 'a', newline='', encoding='utf-8-sig') as f:
 			w = csv.writer(f)
-			if not os.path.exists(detail_path) or os.path.getsize(detail_path) == 0:
+			if write_header:
 				w.writerow(expected_header)
-			for t in self.trade_log:
-				mfe_str = f"{t['mfe']:+.2f}" if t.get('mfe') is not None else ''
-				mae_str = f"{t['mae']:+.2f}" if t.get('mae') is not None else ''
-				w.writerow([
-					today, t['time'], t.get('strategy', 'MOMENTUM'), t['stk_nm'], t['stk_cd'],
-					f"{t['pl_rt']:+.2f}", mfe_str, mae_str, t['reason'],
-					t.get('entry_price', ''), t.get('entry_rsi', ''),
-					t.get('entry_flu_rt', ''), t.get('entry_vol_ratio', ''),
-					t.get('entry_score', ''), '○' if t.get('is_foreign') else '×',
-					t.get('kospi_flu', ''), t.get('kosdaq_flu', ''),
-					t.get('strategy', 'MOMENTUM'),
-					f"{t['orb_gap']:+.2f}"        if t.get('orb_gap')       is not None else '',
-					f"{t['orb_stop_pct']:+.2f}"   if t.get('orb_stop_pct')  is not None else '',
-					t.get('held_minutes', ''),
-					f"{t['orb_overshoot']:+.2f}"  if t.get('orb_overshoot') is not None else '',
-					t.get('confirm_secs', ''),
-					f"{t['breakout_strength']:+.2f}" if t.get('breakout_strength') is not None else '',
-					f"{t['chase_pct']:+.2f}"         if t.get('chase_pct')         is not None else '',
-					t.get('entry_trde_amt', ''),
-					t.get('entry_trde_amt_rank', ''),
-					t.get('entry_time_min', ''),
-					t.get('entry_rank', ''),
-					f"{t['recent_5bar_vol']:+.2f}" if t.get('recent_5bar_vol') is not None else '',
-					f"{t['pl_1m']:+.2f}"           if t.get('pl_1m')          is not None else '',
-					f"{t['pl_3m']:+.2f}"           if t.get('pl_3m')          is not None else '',
-					t.get('market_state', ''),
-					t.get('selection_reason', ''),
-					f"{t['high_pct']:+.2f}"        if t.get('high_pct')       is not None else '',
-					f"{t['entry_vwap']:.0f}"       if t.get('entry_vwap')     is not None else '',
-					f"{t['vwap_gap_pct']:+.2f}"    if t.get('vwap_gap_pct')   is not None else '',
-				])
+			w.writerow(row)
+
+	def _load_today_trades(self):
+		"""trade_detail.csv에서 오늘 매매 수익률 복원 (재시작 후 EOD 통계 보정용)"""
+		today       = datetime.datetime.now().strftime('%Y%m%d')
+		detail_path = os.path.join(self.LOG_DIR, 'trade_detail.csv')
+		if not os.path.exists(detail_path):
+			return []
+		trades = []
+		try:
+			with open(detail_path, 'r', encoding='utf-8-sig') as f:
+				for row in csv.DictReader(f):
+					if row.get('날짜') == today:
+						try:
+							trades.append({'pl_rt': float(row['수익률(%)'].replace('+', ''))})
+						except (ValueError, KeyError):
+							pass
+		except Exception:
+			pass
+		return trades
+
+	def _write_csv(self, today, summary):
+		os.makedirs(self.LOG_DIR, exist_ok=True)
+
+		# trade_detail.csv는 _append_trade_to_csv()에서 매도 즉시 기록
 
 		# ── daily_summary.csv (날짜별 1행 누적) ──────────────────────────
 		summary_path = os.path.join(self.LOG_DIR, 'daily_summary.csv')
@@ -289,14 +315,16 @@ class ReporterMixin:
 			tel_send(message)
 
 			# ── CSV 저장 ──────────────────────────────────
-			wins       = [t for t in self.trade_log if t['pl_rt'] > 0]
-			losses     = [t for t in self.trade_log if t['pl_rt'] <= 0]
-			win_rates  = [t['pl_rt'] for t in wins]
-			lose_rates = [t['pl_rt'] for t in losses]
-			avg_win    = sum(win_rates)  / len(win_rates)  if win_rates  else 0.0
-			avg_loss   = sum(lose_rates) / len(lose_rates) if lose_rates else 0.0
+			# trade_log 비어있으면 (재시작 등) trade_detail.csv에서 복원
+			trade_records = self.trade_log if self.trade_log else self._load_today_trades()
+			wins          = [t for t in trade_records if t['pl_rt'] > 0]
+			losses        = [t for t in trade_records if t['pl_rt'] <= 0]
+			win_rates     = [t['pl_rt'] for t in wins]
+			lose_rates    = [t['pl_rt'] for t in losses]
+			avg_win       = sum(win_rates)  / len(win_rates)  if win_rates  else 0.0
+			avg_loss      = sum(lose_rates) / len(lose_rates) if lose_rates else 0.0
 			profit_factor = abs(avg_win / avg_loss) if avg_loss != 0 else 0.0
-			all_rates  = [t['pl_rt'] for t in self.trade_log]
+			all_rates     = [t['pl_rt'] for t in trade_records]
 
 			# 누적수익률: daily_summary.csv 마지막 행에서 읽어서 합산
 			summary_path = os.path.join(self.LOG_DIR, 'daily_summary.csv')
