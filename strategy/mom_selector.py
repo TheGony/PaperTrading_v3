@@ -85,18 +85,6 @@ class StockSelectorMixin:
 			if cd not in seen:
 				seen[cd] = dict(s, _from_surge=False, trde_amt=s.get('trde_prica', 0))
 
-		# ka10030/ka10032 단독 종목: 시간 비례 sdnin_rt 추정
-		market_open  = datetime.datetime.now().replace(hour=9, minute=0, second=0, microsecond=0)
-		elapsed_mins = max((datetime.datetime.now() - market_open).total_seconds() / 60, 1)
-		time_ratio   = elapsed_mins / 390
-		for cd, rec in seen.items():
-			if cd not in surge_set and rec.get('sdnin_rt', 0) == 0:
-				prev_qty = rec.get('prev_trde_qty', 0)
-				curr_qty = rec.get('trde_qty', 0) or rec.get('now_trde_qty', 0)
-				if prev_qty > 0 and curr_qty > 0:
-					projected = curr_qty / time_ratio
-					rec['sdnin_rt'] = round(projected / prev_qty * 100, 1)
-
 		raw = list(seen.values())
 		if not raw:
 			return []
@@ -111,9 +99,10 @@ class StockSelectorMixin:
 			if s.get('flu_rt', 0) >= 0.3
 			and s.get('trde_amt', 0) >= 1000
 		]
-		pool = filtered if filtered else raw
+		pool   = filtered if filtered else raw
+		n_pool = len(pool)
 
-		# 거래대금 순위
+		# 거래대금 순위 (rank-based 스코어링 기준)
 		amt_sorted = sorted(pool, key=lambda s: s.get('trde_amt', 0), reverse=True)
 		amt_rank   = {s['stk_cd']: i + 1 for i, s in enumerate(amt_sorted)}
 
@@ -174,24 +163,24 @@ class StockSelectorMixin:
 
 		# ── 7. 스코어 계산 ────────────────────────────────────────────
 		# Score = speed*0.35 + vol_power*0.25 + amt*0.20 + rsi*0.10 + sdnin*0.10
+		# amt: pool 내 거래대금 순위 기반 (1위=1.0, n위=1/n)
 		scored = []
 		if candidates:
 			speed_list  = [c.get('speed_5m', 0)  for c in candidates]
 			vp_list     = [c.get('vol_power', 0) for c in candidates]
-			amt_list    = [c.get('trde_amt', 0)  for c in candidates]
 			sdnin_list  = [c.get('sdnin_rt', 0)  for c in candidates]
 
 			max_speed   = max(speed_list)
 			min_speed   = min(speed_list)
 			speed_range = (max_speed - min_speed) or 1
-			max_vp      = max(vp_list)  or 1
-			max_amt     = max(amt_list) or 1
+			max_vp      = max(vp_list)   or 1
 			max_sdnin   = max(sdnin_list) or 1
 
 			for c in candidates:
 				speed_norm = (c.get('speed_5m', 0) - min_speed) / speed_range
 				vp_norm    = c.get('vol_power', 0) / max_vp
-				amt_norm   = math.log(max(c.get('trde_amt', 1), 1)) / math.log(max(max_amt, 2))
+				rank       = amt_rank.get(c['stk_cd'], n_pool)
+				amt_norm   = (n_pool - rank + 1) / n_pool
 				rsi_norm   = c['rsi_val'] / 100
 				sdnin_norm = c.get('sdnin_rt', 0) / max_sdnin
 

@@ -35,7 +35,7 @@ class TraderMixin:
 				async def _deferred_init():
 					while datetime.datetime.now().time() < datetime.time(9, 10):
 						await asyncio.sleep(1)
-					await self._get_orb_candidates(is_refresh=True)
+					await self._add_orb_newcomers()
 					await self._select_initial_stocks()
 
 				self.deferred_init_task = asyncio.create_task(_deferred_init())

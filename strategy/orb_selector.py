@@ -94,12 +94,12 @@ class OrbSelectorMixin:
 			max_high_10    = max((c['high_pric'] for c in open_candles), default=cur_prc)
 			price_position = cur_prc / max_high_10 if max_high_10 > 0 else 1.0
 
-			# 연속 양봉 여부: 가장 최근 3봉이 모두 양봉이면 True
-			recent_3      = open_candles[:3]  # open_candles는 최신순
-			consec_bull   = len(recent_3) == 3 and all(c['cur_prc'] >= c['open_pric'] for c in recent_3)
+			# 연속 양봉 여부: 가장 최근 5봉이 모두 양봉이면 True
+			recent_5      = open_candles[:5]  # open_candles는 최신순
+			consec_bull   = len(recent_5) == 5 and all(c['cur_prc'] >= c['open_pric'] for c in recent_5)
 
-			# 최근 3분 거래량 합계 (모멘텀 보조 지표)
-			vol_3m = sum(c.get('trde_qty', 0) for c in candles[:3])
+			# 최근 5분 거래량 합계 (모멘텀 보조 지표)
+			vol_3m = sum(c.get('trde_qty', 0) for c in candles[:5])
 
 			# ── 소프트 패널티 계산 ───────────────────────────────────
 			penalty = 0.0
@@ -242,5 +242,119 @@ class OrbSelectorMixin:
 					'score':    c.get('score'),
 				})
 			self._log_candidates(log_entries, strategy='ORB')
+
+		return self.orb_candidates
+
+	async def _add_orb_newcomers(self):
+		"""09:10 신규 대장주 추가 — 기존 orb_candidates 유지하고 빈 슬롯만 보충"""
+		log = get_logger()
+
+		if not self.orb_candidates:
+			return await self._get_orb_candidates()
+
+		existing_cds    = {c['stk_cd'] for c in self.orb_candidates}
+		available_slots = self.ORB_CANDIDATES_MAX - len(self.orb_candidates)
+
+		if available_slots <= 0:
+			tel_send(f"ℹ️ [ORB] 09:10 점검 — {len(self.orb_candidates)}종목 확정 (슬롯 없음)")
+			return self.orb_candidates
+
+		raw_trde, raw_vol = await asyncio.gather(
+			asyncio.get_event_loop().run_in_executor(None, fn_ka10032, 30, 'N', '', self.token),
+			asyncio.get_event_loop().run_in_executor(None, fn_ka10030, 30, 'N', '', self.token),
+		)
+
+		trde_amt_map = {s['stk_cd']: s.get('trde_amt', 0) for s in (raw_vol or [])}
+		vol_map      = {s['stk_cd']: s.get('trde_qty', 0) for s in (raw_vol or [])}
+
+		seen = {}
+		for s in (raw_trde or []) + (raw_vol or []):
+			cd = s.get('stk_cd', '')
+			if cd and cd not in seen:
+				seen[cd] = s
+		new_pool = [
+			s for s in seen.values()
+			if s['stk_cd'] not in existing_cds
+			and not self._is_excluded(s.get('stk_nm', ''))
+			and s.get('flu_rt', 0) < 23
+		]
+		new_pool.sort(key=lambda s: s.get('trde_prica', 0) or s.get('trde_amt', 0), reverse=True)
+
+		def _hhmm(t):
+			t = str(t).strip()
+			return t[8:12] if len(t) >= 14 else t[0:4]
+
+		added = []
+		for s in new_pool:
+			if len(added) >= available_slots:
+				break
+			stk_cd  = s['stk_cd']
+			candles = await asyncio.get_event_loop().run_in_executor(
+				None, fn_ka10080_full, stk_cd, 20, 'N', '', self.token
+			)
+			await asyncio.sleep(0.2)
+			if not candles:
+				continue
+
+			open_candles = [c for c in candles if '0900' <= _hhmm(c['cntr_tm']) <= '0910']
+			if not open_candles:
+				continue
+
+			first      = open_candles[-1]
+			day_open   = first['open_pric']
+			prev_close = first['cur_prc'] - first['pred_pre']
+			if prev_close <= 0 or day_open <= 0:
+				continue
+			gap     = (day_open - prev_close) / prev_close * 100
+			cur_prc = candles[0]['cur_prc']
+
+			if gap < -1.0:
+				continue
+			if gap <= 0 and cur_prc <= day_open:
+				continue
+			if cur_prc < day_open * 0.98:
+				continue
+
+			orb_sub      = [c for c in open_candles if _hhmm(c['cntr_tm']) <= '0904']
+			orb_high_pre = max((c['high_pric'] for c in orb_sub), default=None) if orb_sub else None
+			orb_low_pre  = min((c['low_pric']  for c in orb_sub), default=None) if orb_sub else None
+			gap_up       = gap > 0 or (gap >= -1.0 and cur_prc > day_open)
+
+			entry = {
+				'stk_cd':        stk_cd,
+				'stk_nm':        s.get('stk_nm', stk_cd),
+				'gap':           round(gap, 2),
+				'flu_rt':        s.get('flu_rt', 0),
+				'trde_prica':    s.get('trde_prica', 0) or trde_amt_map.get(stk_cd, 0),
+				'trde_qty':      vol_map.get(stk_cd, 0),
+				'price_position': 1.0,
+				'consec_bull':   False,
+				'penalty':       0.0,
+				'score':         0.0,
+				'strategy':      'ORB',
+				'orb_high':      orb_high_pre,
+				'orb_low':       orb_low_pre,
+				'gap_up':        gap_up,
+				'day_open':      day_open,
+				'orb_candle_n':  len(orb_sub),
+			}
+			added.append(entry)
+
+			if stk_cd not in self.orb_data and orb_high_pre is not None:
+				self.orb_data[stk_cd] = {
+					'high':     orb_high_pre,
+					'low':      orb_low_pre,
+					'gap_up':   gap_up,
+					'day_open': day_open,
+				}
+				log.info(f'[ORB 09:10] {stk_cd} orb_data 구축: high={orb_high_pre:.0f} low={orb_low_pre:.0f}')
+
+		if added:
+			self.orb_candidates.extend(added)
+			names = ', '.join(f"{c['stk_nm']}({c['stk_cd']})" for c in added)
+			tel_send(f"✅ [ORB] 09:10 신규 추가 {len(added)}종목: {names}\n   총 {len(self.orb_candidates)}종목")
+			log.info(f'[ORB 09:10 추가] {names}')
+		else:
+			tel_send(f"ℹ️ [ORB] 09:10 점검 — 신규 진입 조건 충족 종목 없음, 기존 {len(self.orb_candidates)}종목 유지")
 
 		return self.orb_candidates

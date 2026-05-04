@@ -46,20 +46,20 @@ def _institutional_filter(current_price: float, closes: list, highs: list, lows:
     if current_price <= vwap:
         return False, f'VWAP 하회 (현재가 {current_price:.0f} ≤ VWAP {vwap:.0f})', vwap
 
-    # 2. VWAP 대비 과열 제외
-    vwap_gap = (current_price - vwap) / vwap
-    if vwap_gap > 0.03:
-        return False, f'VWAP 과열 ({vwap_gap * 100:.1f}% > 3%)', vwap
+    # # 2. VWAP 대비 과열 제외 (비활성화 — 체결력 개선)
+    # vwap_gap = (current_price - vwap) / vwap
+    # if vwap_gap > 0.03:
+    #     return False, f'VWAP 과열 ({vwap_gap * 100:.1f}% > 3%)', vwap
 
-    # 3. 최근 5봉 vs 이전 5봉 거래대금 비교 (tv_oldest_first[-5:] = 최신 5봉)
-    if len(tv_oldest_first) >= 10:
-        recent_tv = sum(tv_oldest_first[-5:])
-        prev_tv   = sum(tv_oldest_first[-10:-5])
-        if prev_tv > 0 and recent_tv <= prev_tv * 1.2:
-            return False, (
-                f'거래대금 증가 부족 '
-                f'(최근5봉 {recent_tv / 1e6:.0f}M ≤ 이전5봉 {prev_tv / 1e6:.0f}M × 1.2)'
-            ), vwap
+    # # 3. 최근 5봉 vs 이전 5봉 거래대금 비교 (비활성화 — 체결력 개선)
+    # if len(tv_oldest_first) >= 10:
+    #     recent_tv = sum(tv_oldest_first[-5:])
+    #     prev_tv   = sum(tv_oldest_first[-10:-5])
+    #     if prev_tv > 0 and recent_tv <= prev_tv * 1.2:
+    #         return False, (
+    #             f'거래대금 증가 부족 '
+    #             f'(최근5봉 {recent_tv / 1e6:.0f}M ≤ 이전5봉 {prev_tv / 1e6:.0f}M × 1.2)'
+    #         ), vwap
 
     return True, '', vwap
 
@@ -284,7 +284,7 @@ class EntryMixin:
 						high_pct = round((current_price / intraday_high - 1) * 100, 2)
 
 					# ── 돌파 유지 확인 ────────────────────────────────────────
-					confirm_secs = 3.0
+					confirm_secs = 1.0
 					if not await self._confirm_breakout(stk_cd, breakout_high, confirm_secs):
 						continue
 
@@ -509,8 +509,8 @@ class EntryMixin:
 			log.info(f'[ORB] {stk_cd} 진입 거절: 거래량 미달 (현재={curr_vol:.0f}, 직전={prev_vol:.0f}, {vol_ratio:.2f}x)')
 			return False
 
-		if rsi is None or rsi < 50 or rsi > 75:
-			log.info(f'[ORB] {stk_cd} 진입 거절: RSI 범위 이탈 (RSI={rsi_str}, 범위: 50<=x<=75)')
+		if rsi is None or rsi < 50 or rsi > 85:
+			log.info(f'[ORB] {stk_cd} 진입 거절: RSI 범위 이탈 (RSI={rsi_str}, 범위: 50<=x<=85)')
 			return False
 
 		orb_max = get_setting('orb_max_count', 5)
@@ -555,10 +555,10 @@ class EntryMixin:
 			'orb_gap':         orb_gap,
 			'orb_overshoot':   orb_overshoot,
 			'strategy':        'ORB',
-			'confirm_secs':    3.0,
+			'confirm_secs':    1.0,
 		}
-		# 돌파 유지 확인: 3초 동안 가격·거래량 유지
-		if not await self._confirm_breakout(stk_cd, orb_high, 3.0):
+		# 돌파 유지 확인: 1초 유지 확인
+		if not await self._confirm_breakout(stk_cd, orb_high, 1.0):
 			return False
 
 		signal_info = (
