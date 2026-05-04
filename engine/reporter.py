@@ -40,15 +40,22 @@ class ReporterMixin:
 		except (ValueError, TypeError):
 			return default
 
-	def _log_candidates(self, entries):
-		"""selector 단계 모든 후보를 candidate_log.csv에 일괄 기록.
-		entries: [{'stock': dict, 'selected': bool, 'reason': str, 'rank': int|None, 'score': float|None, 'rsi': float|None}]
+	def _log_candidates(self, entries, strategy='MOMENTUM'):
+		"""selector 단계 모든 후보를 CSV에 일괄 기록.
+		strategy='MOMENTUM' → candidate_log_mom.csv
+		strategy='ORB'      → candidate_log_orb.csv
 		"""
 		if not entries:
 			return
 		os.makedirs(self.LOG_DIR, exist_ok=True)
-		path = os.path.join(self.LOG_DIR, 'candidate_log.csv')
-		header = ['날짜', '시간', '종목코드', '종목명', '점수', '거래대금(백만)', '등락률(%)', 'RSI', '속도5분(%)', '체결강도(근사)', '외인수급', '선정여부', '제외사유', '선정순위']
+
+		if strategy == 'ORB':
+			path   = os.path.join(self.LOG_DIR, 'candidate_log_orb.csv')
+			header = ['날짜', '시간', '종목코드', '종목명', '점수', '거래대금(백만)', '등락률(%)', '갭(%)', '가격위치', '패널티', '선정여부', '제외사유', '선정순위']
+		else:
+			path   = os.path.join(self.LOG_DIR, 'candidate_log_mom.csv')
+			header = ['날짜', '시간', '종목코드', '종목명', '점수', '거래대금(백만)', '등락률(%)', 'RSI', '속도5분(%)', '체결강도(근사)', '외인수급', '선정여부', '제외사유', '선정순위']
+
 		write_header = not os.path.exists(path) or os.path.getsize(path) == 0
 		now      = datetime.datetime.now()
 		date_str = now.strftime('%Y%m%d')
@@ -58,25 +65,42 @@ class ReporterMixin:
 			if write_header:
 				w.writerow(header)
 			for entry in entries:
-				s       = entry['stock']
-				is_sel  = entry['selected']
-				score   = entry.get('score')
-				rsi_val = entry.get('rsi')
-				w.writerow([
-					date_str, time_str,
-					s.get('stk_cd', ''),
-					s.get('stk_nm', ''),
-					f"{score:.4f}"                    if score   is not None else '',
-					s.get('trde_amt', '')             or '',
-					f"{s.get('flu_rt', 0):+.2f}"      if s.get('flu_rt')    is not None else '',
-					f"{rsi_val:.1f}"                  if rsi_val is not None else '',
-					f"{s.get('speed_5m', 0):+.3f}"    if s.get('speed_5m')  is not None else '',
-					f"{s.get('vol_power', 0):.1f}"    if s.get('vol_power') is not None else '',
-					'○' if s.get('is_foreign') else '×',
-					'선정' if is_sel else '제외',
-					entry.get('reason', ''),
-					entry.get('rank', '') or '',
-				])
+				s      = entry['stock']
+				is_sel = entry['selected']
+				score  = entry.get('score')
+				if strategy == 'ORB':
+					gap = s.get('gap')
+					w.writerow([
+						date_str, time_str,
+						s.get('stk_cd', ''),
+						s.get('stk_nm', ''),
+						f"{score:.4f}"                          if score is not None else '',
+						s.get('trde_prica', '')                 or '',
+						f"{s.get('flu_rt', 0):+.2f}"            if s.get('flu_rt')         is not None else '',
+						f"{gap:+.2f}"                           if gap  is not None else '',
+						f"{s.get('price_position', 0):.3f}"     if s.get('price_position') is not None else '',
+						f"{s.get('penalty', 0):.2f}"            if s.get('penalty')        is not None else '',
+						'선정' if is_sel else '제외',
+						entry.get('reason', ''),
+						entry.get('rank', '') or '',
+					])
+				else:
+					rsi_val = entry.get('rsi')
+					w.writerow([
+						date_str, time_str,
+						s.get('stk_cd', ''),
+						s.get('stk_nm', ''),
+						f"{score:.4f}"                    if score   is not None else '',
+						s.get('trde_amt', '')             or '',
+						f"{s.get('flu_rt', 0):+.2f}"      if s.get('flu_rt')    is not None else '',
+						f"{rsi_val:.1f}"                  if rsi_val is not None else '',
+						f"{s.get('speed_5m', 0):+.3f}"    if s.get('speed_5m')  is not None else '',
+						f"{s.get('vol_power', 0):.1f}"    if s.get('vol_power') is not None else '',
+						'○' if s.get('is_foreign') else '×',
+						'선정' if is_sel else '제외',
+						entry.get('reason', ''),
+						entry.get('rank', '') or '',
+					])
 
 	def _log_trade(self, stk_nm, stk_cd, pl_rt, reason, mfe=None, mae=None, snapshot=None):
 		record = {

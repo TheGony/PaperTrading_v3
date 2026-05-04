@@ -456,7 +456,11 @@
     선정순위, 최근5봉변동성, 1분수익률, 3분수익률, 시장상태, 선정이유, 고점대비위치,
     진입VWAP, VWAP갭(%)
 
-  trading_logs/candidate_log.csv   선정 단계 후보 전체 기록
+  trading_logs/candidate_log_orb.csv   ORB 선정 단계 후보 전체 기록
+    날짜, 시간, 종목코드, 종목명, 점수, 거래대금, 등락률, 갭(%),
+    가격위치, 패널티, 선정여부, 제외사유, 선정순위
+
+  trading_logs/candidate_log_mom.csv   MOMENTUM 선정 단계 후보 전체 기록
     날짜, 시간, 종목코드, 종목명, 점수, 거래대금, 등락률, RSI,
     속도5분(%), 체결강도(근사), 외인수급, 선정여부, 제외사유, 선정순위
 

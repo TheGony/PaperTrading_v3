@@ -227,4 +227,20 @@ class OrbSelectorMixin:
 		label = "2차 갱신" if is_refresh else "선정"
 		tel_send(f"✅ [ORB] 후보 {len(self.orb_candidates)}종목 {label}\n   {names}")
 		log.info(f'[ORB 선정] {names}')
+
+		# ── candidate_log_orb.csv 기록 ──────────────────────────────
+		if hasattr(self, '_log_candidates'):
+			selected_map = {c['stk_cd']: i + 1 for i, c in enumerate(self.orb_candidates)}
+			log_entries  = []
+			for c in candidates:
+				is_sel = c['stk_cd'] in selected_map
+				log_entries.append({
+					'stock':    c,
+					'selected': is_sel,
+					'reason':   '' if is_sel else ('보충' if c.get('score') == -0.5 else '점수 낮음'),
+					'rank':     selected_map[c['stk_cd']] if is_sel else None,
+					'score':    c.get('score'),
+				})
+			self._log_candidates(log_entries, strategy='ORB')
+
 		return self.orb_candidates
