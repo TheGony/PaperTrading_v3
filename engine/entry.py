@@ -126,10 +126,18 @@ class EntryMixin:
 					return_exceptions=True,
 				)
 
-				# ── 루프 전 1회: 시장 지수 조회 및 상태 계산 ──────────────
-				kospi_flu, kosdaq_flu = await asyncio.get_event_loop().run_in_executor(
-					None, fn_get_market_index, self.token
-				)
+				# ── 시장 지수: 최초 1회 + 15분 주기 갱신 ──────────────────
+				_now = datetime.datetime.now()
+				if (self._market_index_last_time is None
+						or (_now - self._market_index_last_time).total_seconds() >= 900):
+					kospi_flu, kosdaq_flu = await asyncio.get_event_loop().run_in_executor(
+						None, fn_get_market_index, self.token
+					)
+					self._market_index_cache     = (kospi_flu, kosdaq_flu)
+					self._market_index_last_time = _now
+				else:
+					kospi_flu, kosdaq_flu = self._market_index_cache
+
 				avg_mkt = ((kospi_flu or 0) + (kosdaq_flu or 0)) / 2
 				if avg_mkt >= 0.3:
 					market_state = '상승'

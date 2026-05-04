@@ -46,6 +46,8 @@ class ChatCommand(
 		self._chart_semaphore       = None   # 동시 API 호출 제한 (Semaphore(4), 첫 호출 시 초기화)
 		self._last_candle_time      = {}     # cntr_tm 기반 동일봉 스킵 {stk_cd: cntr_tm}
 		self._sell_signal_count     = {}     # 휩쏘 방지: 연속 매도 신호 횟수 {stk_cd: count}
+		self._market_index_cache    = (None, None)  # (kospi_flu, kosdaq_flu) 캐시
+		self._market_index_last_time = None  # 마지막 시장 지수 조회 시각
 		self.market_volatility      = 0.0    # KOSPI*0.4 + KOSDAQ*0.6 ATR(14)/price*100
 		self.market_regime          = 'normal'  # volatile_market / trend_strong / sideways / normal
 		self.regime_task            = None   # Market Regime 갱신 백그라운드 태스크

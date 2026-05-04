@@ -184,10 +184,12 @@ class TraderMixin:
 			self.min_profit             = {}
 			self.sell_cooldown          = {}
 			self.needs_stock_refresh    = False
-			self._sell_signal_count     = {}
-			self._last_candle_time      = {}
-			self._chart_cache           = {}
-			self.market_volatility      = 0.0
+			self._sell_signal_count      = {}
+			self._last_candle_time       = {}
+			self._chart_cache            = {}
+			self._market_index_cache     = (None, None)
+			self._market_index_last_time = None
+			self.market_volatility       = 0.0
 			self.market_regime          = 'normal'
 			self.deferred_init_task     = None
 
