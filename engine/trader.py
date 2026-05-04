@@ -29,13 +29,15 @@ class TraderMixin:
 			await self._get_orb_candidates()
 			self.orb_ready = True
 
-			# ORB 2차 갱신 (09:10)
-			while datetime.datetime.now().time() < datetime.time(9, 10):
-				await asyncio.sleep(1)
-			await self._get_orb_candidates(is_refresh=True)
+			# ORB 2차 갱신 + MOMENTUM 초기 선정을 백그라운드로 예약
+			# → 실시간 루프는 ORB 1차 완료(09:05) 직후부터 즉시 시작
+			async def _deferred_init():
+				while datetime.datetime.now().time() < datetime.time(9, 10):
+					await asyncio.sleep(1)
+				await self._get_orb_candidates(is_refresh=True)
+				await self._select_initial_stocks()
 
-			# MOMENTUM 초기 종목 선정 (ORB 2차 갱신 완료 이후)
-			await self._select_initial_stocks()
+			asyncio.create_task(_deferred_init())
 
 			# ── 실시간 루프 (5초 주기) ─────────────────────────────
 			last_refresh_time = datetime.datetime.now()
@@ -43,15 +45,14 @@ class TraderMixin:
 			while self.is_running and MarketHour.is_market_open_time():
 				now = datetime.datetime.now()
 
-				# MOMENTUM 즉시 보충
-				if self.needs_stock_refresh and MarketHour.is_entry_allowed():
+				# MOMENTUM 갱신은 초기 선정 완료(selected_stocks 비어있지 않음) 이후에만 실행
+				if self.needs_stock_refresh and MarketHour.is_entry_allowed() and self.selected_stocks:
 					self.needs_stock_refresh = False
 					await self._refresh_selected_stocks()
 					last_refresh_time = now
 
-				# MOMENTUM 주기 갱신 (5분)
 				elif (now - last_refresh_time).total_seconds() >= self.STOCK_REFRESH_INTERVAL \
-						and MarketHour.is_entry_allowed():
+						and MarketHour.is_entry_allowed() and self.selected_stocks:
 					await self._refresh_selected_stocks()
 					last_refresh_time = now
 

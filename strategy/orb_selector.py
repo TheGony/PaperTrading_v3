@@ -7,7 +7,7 @@ from util.logger import get_logger
 
 
 class OrbSelectorMixin:
-	ORB_CANDIDATES_MAX = 15
+	ORB_CANDIDATES_MAX = 8
 	ORB_MIN_CANDIDATES = 5
 
 	async def _get_orb_candidates(self, is_refresh=False):

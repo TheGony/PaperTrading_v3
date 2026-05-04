@@ -54,12 +54,12 @@ def fn_ka10080(stk_cd, count=30, cont_yn='N', next_key='', token=None):
 		except Exception as e:
 			if attempt == 2:
 				log.error(f'[ka10080] {stk_cd} 요청 실패: {e}')
-				return [], [], [], [], ''
+				return [], [], [], [], [], ''
 			wait = _retry_wait(attempt)
 			log.warning(f'[ka10080] {stk_cd} 요청 실패 ({attempt+1}/3): {e}')
 			time.sleep(wait)
 	else:
-		return [], [], [], [], ''
+		return [], [], [], [], [], ''
 
 	chart_data = data.get('stk_min_pole_chart_qry', [])
 	if not chart_data:

@@ -112,8 +112,14 @@ class EntryMixin:
 					continue
 				held_stock_codes = [stock['stk_cd'].replace('A', '') for stock in my_stocks]
 
+				# ── 루프 전 1회: ORB 윈도우 시간 체크 ──────────────────────
+				now_time   = datetime.datetime.now().time()
+				orb_window = self.orb_ready and now_time <= datetime.time(9, 30)
+
+				# ORB 후보는 진입 윈도우 내에서만 포함
+				orb_codes  = {s['stk_cd'] for s in self.orb_candidates} if orb_window else set()
+
 				# ── 차트 데이터 병렬 사전 조회 (이후 루프는 캐시 사용) ──
-				orb_codes  = {s['stk_cd'] for s in self.orb_candidates}
 				all_codes  = list(set(self.selected_stocks + held_stock_codes + list(orb_codes)))
 				await asyncio.gather(
 					*[self._get_chart(cd, needed) for cd in all_codes],
@@ -132,11 +138,7 @@ class EntryMixin:
 				else:
 					market_state = '보합'
 
-				# ── 루프 전 1회: ORB 윈도우 시간 체크 ──────────────────────
-				now_time   = datetime.datetime.now().time()
-				orb_window = self.orb_ready and now_time <= datetime.time(9, 30)
-
-				# 단일 루프: ORB 후보 + 선정 종목 + 보유 종목 통합 처리
+				# 단일 루프: ORB 후보(윈도우 내) + 선정 종목 + 보유 종목 통합 처리
 				stocks_to_check = list(set(self.selected_stocks + held_stock_codes + list(orb_codes)))
 
 				for stk_cd in stocks_to_check:

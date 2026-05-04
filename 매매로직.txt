@@ -91,7 +91,7 @@
       self.orb_data[stk_cd]에 미리 저장 → _try_orb_entry의 중복 API 호출 방지
 
   결과:
-    최대 15종목 (ORB_CANDIDATES_MAX)
+    최대 8종목 (ORB_CANDIDATES_MAX)
     5종목 미만 시 캔들 필터 미통과 종목을 거래대금 순으로 보충 (score = -0.5)
 
 
