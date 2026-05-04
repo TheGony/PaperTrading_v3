@@ -38,7 +38,7 @@ class TraderMixin:
 					await self._get_orb_candidates(is_refresh=True)
 					await self._select_initial_stocks()
 
-				asyncio.create_task(_deferred_init())
+				self.deferred_init_task = asyncio.create_task(_deferred_init())
 			else:
 				# 09:30 이후 시작: ORB 윈도우 종료 → 선정 스킵, MOMENTUM만 실행
 				tel_send("⚠️ 09:30 이후 시작 — ORB 선정 생략, MOMENTUM만 운영")
@@ -163,16 +163,33 @@ class TraderMixin:
 				except asyncio.CancelledError:
 					pass
 
+			if self.deferred_init_task and not self.deferred_init_task.done():
+				self.deferred_init_task.cancel()
+				try:
+					await self.deferred_init_task
+				except asyncio.CancelledError:
+					pass
+
 			self.orb_ready              = False
-			self.selected_stocks        = []
-			self.selected_stocks_names  = {}
-			self.last_chart_check_time  = None
+			self.orb_candidates         = []
 			self.orb_data               = {}
 			self.orb_buy_count          = 0
-			self.orb_candidates         = []
+			self.selected_stocks        = []
+			self.selected_stocks_names  = {}
+			self.selected_stocks_meta   = {}
+			self.last_chart_check_time  = None
+			self.entry_snapshot         = {}
+			self.entry_time             = {}
+			self.peak_profit            = {}
+			self.min_profit             = {}
+			self.sell_cooldown          = {}
+			self.needs_stock_refresh    = False
 			self._sell_signal_count     = {}
+			self._last_candle_time      = {}
+			self._chart_cache           = {}
 			self.market_volatility      = 0.0
 			self.market_regime          = 'normal'
+			self.deferred_init_task     = None
 
 			tel_send("✅ 트레이딩 프로세스가 중지되었습니다")
 			return True

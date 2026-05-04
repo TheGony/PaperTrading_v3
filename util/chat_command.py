@@ -49,3 +49,4 @@ class ChatCommand(
 		self.market_volatility      = 0.0    # KOSPI*0.4 + KOSDAQ*0.6 ATR(14)/price*100
 		self.market_regime          = 'normal'  # volatile_market / trend_strong / sideways / normal
 		self.regime_task            = None   # Market Regime 갱신 백그라운드 태스크
+		self.deferred_init_task     = None   # ORB 2차+MOM 초기 선정 백그라운드 태스크

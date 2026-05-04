@@ -7,7 +7,7 @@ from util.logger import get_logger
 
 
 class OrbSelectorMixin:
-	ORB_CANDIDATES_MAX = 8
+	ORB_CANDIDATES_MAX = 7
 	ORB_MIN_CANDIDATES = 5
 
 	async def _get_orb_candidates(self, is_refresh=False):
@@ -36,7 +36,9 @@ class OrbSelectorMixin:
 			cd = s.get('stk_cd', '')
 			if cd and cd not in seen:
 				seen[cd] = s
-		pool = [s for s in seen.values() if not self._is_excluded(s.get('stk_nm', ''))]
+		pool = [s for s in seen.values()
+				if not self._is_excluded(s.get('stk_nm', ''))
+				and s.get('flu_rt', 0) < 23]
 
 		if not pool:
 			tel_send("⚠️ [ORB] ETF/ETN 제거 후 후보 없음")

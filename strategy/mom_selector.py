@@ -100,7 +100,7 @@ class StockSelectorMixin:
 
 		# ── 2. ETF/ETN 제거 + 과열 제외 ─────────────────────
 		raw = [s for s in raw if not self._is_excluded(s.get('stk_nm', ''))]
-		raw = [s for s in raw if s.get('flu_rt', 0) <= 23]
+		raw = [s for s in raw if s.get('flu_rt', 0) < 23]
 
 		# ── 3. 1차 필터: 등락률 ≥ +0.3%, 거래대금 ≥ 10억 ──────
 		filtered = [
@@ -287,6 +287,8 @@ class StockSelectorMixin:
 					merged_pool[cd] = new_map[cd]
 				else:
 					old = self.selected_stocks_meta.get(cd, {})
+					if old.get('flu_rt', 0) >= 23:  # 과열 진행 중인 기존 종목 제거
+						continue
 					merged_pool[cd] = {
 						'stk_cd':     cd,
 						'stk_nm':     self.selected_stocks_names.get(cd, cd),

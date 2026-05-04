@@ -48,17 +48,15 @@ class ExitMixin:
 						completion = f"{emoji} {stock['stk_nm']} ({stk_cd}) {ord_qty}주 매도 완료\n   수익률: {profit_loss_rate:+.2f}% | {reason}"
 						tel_send(f"{signal_info}\n{completion}" if signal_info else completion)
 						self._log_trade(stock['stk_nm'], stk_cd, profit_loss_rate, reason, mfe=mfe, mae=mae, snapshot=snap)
+						self.sell_cooldown[stk_cd] = datetime.datetime.now()
 					else:
 						log.error(f'[매도 실패] {stk_cd} API 결과={result}')
 						tel_send(f"❌ 매도 실패: {stk_cd} (API 결과={result})")
-					self.sell_cooldown[stk_cd] = datetime.datetime.now()
 					break
 
 		except Exception as e:
 			log.error(f'[매도 오류] {stk_cd}: {e}', exc_info=True)
-			tel_send(f"❌ {stk_cd} 매도 중 오류: {e}\n5초 후 다시 시도합니다.")
-			await asyncio.sleep(5)
-			await self._sell_stock(stk_cd, reason, signal_info=signal_info)
+			tel_send(f"❌ {stk_cd} 매도 중 오류: {e}")
 
 	async def _profit_check_loop(self):
 		"""수익율을 매 초 확인하고 익절/손절하는 백그라운드 루프"""
