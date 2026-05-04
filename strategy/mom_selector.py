@@ -135,19 +135,23 @@ class StockSelectorMixin:
 			else:
 				speed_5m = 0.0
 
-			# vol_power: 거래량 가중 캔들 위치 (MFI 방식 근사)
-			# Σ((종가-저가)/(고가-저가) × 거래량) / Σ거래량 × 100
-			wp_bars    = min(3, len(prices))
-			total_vol  = sum(volumes[i] for i in range(wp_bars))
-			if total_vol > 0 and highs and lows:
-				wp_sum = sum(
-					((prices[i] - lows[i]) / (highs[i] - lows[i])) * volumes[i]
-					for i in range(wp_bars)
-					if highs[i] > lows[i]
-				)
-				vol_power = round(wp_sum / total_vol * 100, 1)
-			else:
-				vol_power = 50.0
+			# vol_power: Hybrid Volume Power
+			# 캔들 위치(MFI 근사) × 방향 가중 거래량
+			# 상승봉 거래량 ×1.2, 하락봉 ×0.8 → 매수세/매도세 구분 강화
+			wp_bars     = min(5, len(prices))
+			adj_vol_sum = 0.0
+			wp_sum      = 0.0
+			for i in range(wp_bars):
+				price_pos = ((prices[i] - lows[i]) / (highs[i] - lows[i])
+							 if highs[i] > lows[i] else 0.5)
+				if i + 1 < len(prices):
+					dir_w = 1.2 if prices[i] > prices[i + 1] else (0.8 if prices[i] < prices[i + 1] else 1.0)
+				else:
+					dir_w = 1.0
+				adj_vol      = volumes[i] * dir_w
+				wp_sum      += price_pos * adj_vol
+				adj_vol_sum += adj_vol
+			vol_power = round(wp_sum / adj_vol_sum * 100, 1) if adj_vol_sum > 0 else 50.0
 
 			return {
 				**s,
