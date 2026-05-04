@@ -275,34 +275,10 @@ class StockSelectorMixin:
 			exclusion_set = await self._get_exclusion_set()
 			stock_count   = get_setting('stock_count', 10)
 
-			# 새로 조회된 후보 맵 (제외 종목 필터링)
+			# 새로 조회된 후보 맵 (제외 종목 필터링) — 현재 점수 기준으로만 정렬
 			new_map = {s['stk_cd']: s for s in ranked_stocks if s['stk_cd'] not in exclusion_set}
 
-			# ── 점수 비교 기반 병합 ─────────────────────────────────
-			merged_pool = {}
-			for cd in self.selected_stocks:
-				if cd in exclusion_set:
-					continue
-				if cd in new_map:
-					merged_pool[cd] = new_map[cd]
-				else:
-					old = self.selected_stocks_meta.get(cd, {})
-					if old.get('flu_rt', 0) >= 23:  # 과열 진행 중인 기존 종목 제거
-						continue
-					merged_pool[cd] = {
-						'stk_cd':     cd,
-						'stk_nm':     self.selected_stocks_names.get(cd, cd),
-						'score':      old.get('score', 0),
-						'flu_rt':     old.get('flu_rt', 0),
-						'is_foreign': old.get('is_foreign', False),
-						'strategy':   'MOMENTUM',
-					}
-
-			for cd, s in new_map.items():
-				if cd not in merged_pool:
-					merged_pool[cd] = s
-
-			final_stocks = sorted(merged_pool.values(), key=lambda x: x['score'], reverse=True)[:stock_count]
+			final_stocks = sorted(new_map.values(), key=lambda x: x['score'], reverse=True)[:stock_count]
 			new_stocks   = [s['stk_cd'] for s in final_stocks]
 			new_names    = {s['stk_cd']: s.get('stk_nm', s['stk_cd']) for s in final_stocks}
 			new_meta     = {
