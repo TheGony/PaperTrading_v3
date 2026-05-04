@@ -26,18 +26,23 @@ class TraderMixin:
 			# ORB 1차 선정 (09:05 — 09:00~09:04 Range 5봉 확립 후)
 			while datetime.datetime.now().time() < datetime.time(9, 5):
 				await asyncio.sleep(1)
-			await self._get_orb_candidates()
-			self.orb_ready = True
 
-			# ORB 2차 갱신 + MOMENTUM 초기 선정을 백그라운드로 예약
-			# → 실시간 루프는 ORB 1차 완료(09:05) 직후부터 즉시 시작
-			async def _deferred_init():
-				while datetime.datetime.now().time() < datetime.time(9, 10):
-					await asyncio.sleep(1)
-				await self._get_orb_candidates(is_refresh=True)
+			if datetime.datetime.now().time() <= datetime.time(9, 30):
+				# ORB 진입 윈도우 내: 1차 선정 후 루프 즉시 시작, 2차+MOM 선정은 백그라운드
+				await self._get_orb_candidates()
+				self.orb_ready = True
+
+				async def _deferred_init():
+					while datetime.datetime.now().time() < datetime.time(9, 10):
+						await asyncio.sleep(1)
+					await self._get_orb_candidates(is_refresh=True)
+					await self._select_initial_stocks()
+
+				asyncio.create_task(_deferred_init())
+			else:
+				# 09:30 이후 시작: ORB 윈도우 종료 → 선정 스킵, MOMENTUM만 실행
+				tel_send("⚠️ 09:30 이후 시작 — ORB 선정 생략, MOMENTUM만 운영")
 				await self._select_initial_stocks()
-
-			asyncio.create_task(_deferred_init())
 
 			# ── 실시간 루프 (5초 주기) ─────────────────────────────
 			last_refresh_time = datetime.datetime.now()
