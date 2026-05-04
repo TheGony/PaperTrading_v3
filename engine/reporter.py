@@ -48,7 +48,7 @@ class ReporterMixin:
 			return
 		os.makedirs(self.LOG_DIR, exist_ok=True)
 		path = os.path.join(self.LOG_DIR, 'candidate_log.csv')
-		header = ['날짜', '시간', '종목코드', '종목명', '점수', '거래대금(백만)', '등락률(%)', 'RSI', '외인수급', '선정여부', '제외사유', '선정순위']
+		header = ['날짜', '시간', '종목코드', '종목명', '점수', '거래대금(백만)', '등락률(%)', 'RSI', '속도5분(%)', '체결강도(근사)', '외인수급', '선정여부', '제외사유', '선정순위']
 		write_header = not os.path.exists(path) or os.path.getsize(path) == 0
 		now      = datetime.datetime.now()
 		date_str = now.strftime('%Y%m%d')
@@ -66,10 +66,12 @@ class ReporterMixin:
 					date_str, time_str,
 					s.get('stk_cd', ''),
 					s.get('stk_nm', ''),
-					f"{score:.4f}"               if score   is not None else '',
-					s.get('trde_amt', '')        or '',
-					f"{s.get('flu_rt', 0):+.2f}" if s.get('flu_rt') is not None else '',
-					f"{rsi_val:.1f}"             if rsi_val is not None else '',
+					f"{score:.4f}"                    if score   is not None else '',
+					s.get('trde_amt', '')             or '',
+					f"{s.get('flu_rt', 0):+.2f}"      if s.get('flu_rt')    is not None else '',
+					f"{rsi_val:.1f}"                  if rsi_val is not None else '',
+					f"{s.get('speed_5m', 0):+.3f}"    if s.get('speed_5m')  is not None else '',
+					f"{s.get('vol_power', 0):.1f}"    if s.get('vol_power') is not None else '',
 					'○' if s.get('is_foreign') else '×',
 					'선정' if is_sel else '제외',
 					entry.get('reason', ''),

@@ -47,22 +47,23 @@ class StockSelectorMixin:
 		return excluded
 
 	async def _fetch_momentum_stocks(self):
-		"""MOMENTUM 전략 종목 선정: ka10030(주) + ka10023(보조), ka90009(수급)"""
+		"""MOMENTUM 전략 종목 선정: ka10030 + ka10023 + ka10032 각 50종목 통합 풀"""
 		stock_count = get_setting('stock_count', 10)
 		chart_long  = get_setting('chart_long', 20)
 		rsi_period  = 14
 		needed      = max(chart_long + 1, rsi_period + 2)
+		SPEED_BARS  = 5  # speed_5m 기준 봉 수
 
-		# ── 1. API 조회 (ka10030 거래량 상위 + ka10023 급증 보조 병합) ──
-		raw_vol, raw_surge = await asyncio.gather(
-			asyncio.get_event_loop().run_in_executor(None, fn_ka10030, 30, 'N', '', self.token),
-			asyncio.get_event_loop().run_in_executor(None, fn_ka10023, 30, 'N', '', self.token),
+		# ── 1. API 조회 (3개 소스 50종목씩 병렬) ─────────────────────
+		raw_vol, raw_surge, raw_amt = await asyncio.gather(
+			asyncio.get_event_loop().run_in_executor(None, fn_ka10030, 50, 'N', '', self.token),
+			asyncio.get_event_loop().run_in_executor(None, fn_ka10023, 50, 'N', '', self.token),
+			asyncio.get_event_loop().run_in_executor(None, fn_ka10032, 50, 'N', '', self.token),
 		)
 
-		# ka10023(급증) 우선 수집 → ka10030(거래량)으로 trde_qty/trde_amt 보충
-		# 급증 출처 태그(_from_surge)로 fallback 우선순위 결정
+		# ── 2. 통합 (ka10023 급증 우선, ka10030/ka10032 보충) ────────
 		surge_set: set = set()
-		seen: dict = {}
+		seen: dict     = {}
 		for s in (raw_surge or []):
 			cd = s.get('stk_cd', '')
 			if cd:
@@ -73,7 +74,6 @@ class StockSelectorMixin:
 			if not cd:
 				continue
 			if cd in seen:
-				# ka10023 레코드에 거래대금·거래량 보충 (없는 경우만)
 				rec = seen[cd]
 				if not rec.get('trde_qty'):
 					rec['trde_qty'] = s.get('trde_qty', 0)
@@ -81,11 +81,19 @@ class StockSelectorMixin:
 					rec['trde_amt'] = s.get('trde_amt', 0)
 			else:
 				seen[cd] = dict(s, _from_surge=False)
+		for s in (raw_amt or []):
+			cd = s.get('stk_cd', '')
+			if not cd:
+				continue
+			if cd not in seen:
+				seen[cd] = dict(s, _from_surge=False, trde_amt=s.get('trde_prica', 0))
+			elif not seen[cd].get('trde_amt'):
+				seen[cd]['trde_amt'] = s.get('trde_prica', 0)
 
-		# ka10030-only 종목: prev_trde_qty가 있으면 시간 비례 sdnin_rt 추정
+		# ka10030-only 종목: 시간 비례 sdnin_rt 추정
 		market_open  = datetime.datetime.now().replace(hour=9, minute=0, second=0, microsecond=0)
 		elapsed_mins = max((datetime.datetime.now() - market_open).total_seconds() / 60, 1)
-		time_ratio   = elapsed_mins / 390  # 전체 장 시간(390분) 대비 경과 비율
+		time_ratio   = elapsed_mins / 390
 		for cd, rec in seen.items():
 			if cd not in surge_set and rec.get('sdnin_rt', 0) == 0:
 				prev_qty = rec.get('prev_trde_qty', 0)
@@ -98,11 +106,11 @@ class StockSelectorMixin:
 		if not raw:
 			return []
 
-		# ── 2. ETF/ETN 제거 + 과열 제외 ─────────────────────
+		# ── 3. ETF/ETN 제거 + 23% 하드 제외 ─────────────────────────
 		raw = [s for s in raw if not self._is_excluded(s.get('stk_nm', ''))]
 		raw = [s for s in raw if s.get('flu_rt', 0) < 23]
 
-		# ── 3. 1차 필터: 등락률 ≥ +0.3%, 거래대금 ≥ 10억 ──────
+		# ── 4. 기본 필터: 등락률 ≥ +0.3%, 거래대금 ≥ 10억 ──────────
 		filtered = [
 			s for s in raw
 			if s.get('flu_rt', 0) >= 0.3
@@ -114,23 +122,46 @@ class StockSelectorMixin:
 		amt_sorted = sorted(pool, key=lambda s: s.get('trde_amt', 0), reverse=True)
 		amt_rank   = {s['stk_cd']: i + 1 for i, s in enumerate(amt_sorted)}
 
-		# ── 4. 기관/외인 조회 ────────────────────────────────
+		# ── 5. 외인 조회 ──────────────────────────────────────────────
 		buy_stocks = await asyncio.get_event_loop().run_in_executor(
 			None, fn_ka90009, 'N', '', self.token
 		)
 
-		# ── 5. 차트 필터 → 후보 수집 (병렬, 공유 캐시) ──────────
+		# ── 6. 차트 조회 + 동적 지표 계산 (병렬) ─────────────────────
 		async def _fetch(s):
-			prices, *_ = await self._get_chart(s['stk_cd'], needed)
+			prices, volumes, _, highs, lows, _ = await self._get_chart(s['stk_cd'], needed)
 			if not prices or len(prices) < needed:
 				return None
 			rsi = self._calc_rsi(prices, rsi_period)
+
+			# speed_5m: 5분 전 봉 대비 현재가 변화율(%)
+			if len(prices) > SPEED_BARS and prices[SPEED_BARS] > 0:
+				speed_5m = (prices[0] - prices[SPEED_BARS]) / prices[SPEED_BARS] * 100
+			else:
+				speed_5m = 0.0
+
+			# vol_power: 거래량 가중 캔들 위치 (MFI 방식 근사)
+			# Σ((종가-저가)/(고가-저가) × 거래량) / Σ거래량 × 100
+			wp_bars    = min(3, len(prices))
+			total_vol  = sum(volumes[i] for i in range(wp_bars))
+			if total_vol > 0 and highs and lows:
+				wp_sum = sum(
+					((prices[i] - lows[i]) / (highs[i] - lows[i])) * volumes[i]
+					for i in range(wp_bars)
+					if highs[i] > lows[i]
+				)
+				vol_power = round(wp_sum / total_vol * 100, 1)
+			else:
+				vol_power = 50.0
+
 			return {
 				**s,
 				'trde_amt_rank': amt_rank.get(s['stk_cd'], len(pool)),
 				'rsi_val':       rsi if rsi is not None else 50.0,
 				'is_foreign':    bool(buy_stocks and s['stk_cd'] in buy_stocks),
 				'strategy':      'MOMENTUM',
+				'speed_5m':      round(speed_5m, 3),
+				'vol_power':     vol_power,
 			}
 
 		results    = await asyncio.gather(*[_fetch(s) for s in pool], return_exceptions=True)
@@ -142,34 +173,41 @@ class StockSelectorMixin:
 			else:
 				failed_stk.append(s)
 
-		# ── 6. 로그 정규화 후 스코어 계산 ──────────────────────
-		# score = volume*0.30 + flu*0.25 + rsi*0.20 + foreign*0.15 + sdnin*0.10
+		# ── 7. 스코어 계산 ────────────────────────────────────────────
+		# Score = speed*0.35 + vol_power*0.25 + amt*0.20 + rsi*0.10 + sdnin*0.10
 		scored = []
 		if candidates:
-			amt_list   = [c.get('trde_amt', 0)  for c in candidates]
-			flu_list   = [c.get('flu_rt', 0)    for c in candidates]
-			sdnin_list = [c.get('sdnin_rt', 0)  for c in candidates]
-			max_amt    = max(amt_list) or 1
-			max_flu    = max(flu_list)
-			min_flu    = min(flu_list)
-			flu_range  = (max_flu - min_flu) or 1
-			# 풀 내 상대 최댓값 기준 정규화 (장 초반 낮은 절댓값도 올바르게 반영)
-			max_sdnin  = max(sdnin_list) or 1
+			speed_list  = [c.get('speed_5m', 0)  for c in candidates]
+			vp_list     = [c.get('vol_power', 0) for c in candidates]
+			amt_list    = [c.get('trde_amt', 0)  for c in candidates]
+			sdnin_list  = [c.get('sdnin_rt', 0)  for c in candidates]
+
+			max_speed   = max(speed_list)
+			min_speed   = min(speed_list)
+			speed_range = (max_speed - min_speed) or 1
+			max_vp      = max(vp_list)  or 1
+			max_amt     = max(amt_list) or 1
+			max_sdnin   = max(sdnin_list) or 1
 
 			for c in candidates:
-				volume_norm   = math.log(max(c.get('trde_amt', 1), 1)) / math.log(max(max_amt, 2))
-				flu_norm      = (c.get('flu_rt', 0) - min_flu) / flu_range
-				rsi_norm      = c['rsi_val'] / 100
-				foreign_score = 1.0 if c['is_foreign'] else 0.0
-				sdnin_norm    = c.get('sdnin_rt', 0) / max_sdnin
+				speed_norm = (c.get('speed_5m', 0) - min_speed) / speed_range
+				vp_norm    = c.get('vol_power', 0) / max_vp
+				amt_norm   = math.log(max(c.get('trde_amt', 1), 1)) / math.log(max(max_amt, 2))
+				rsi_norm   = c['rsi_val'] / 100
+				sdnin_norm = c.get('sdnin_rt', 0) / max_sdnin
 
 				score = (
-					volume_norm   * 0.30 +
-					flu_norm      * 0.25 +
-					rsi_norm      * 0.20 +
-					foreign_score * 0.15 +
-					sdnin_norm    * 0.10
+					speed_norm * 0.35 +
+					vp_norm    * 0.25 +
+					amt_norm   * 0.20 +
+					rsi_norm   * 0.10 +
+					sdnin_norm * 0.10
 				)
+
+				# 과열 페널티: 등락률 +20% 초과 시 스코어 20% 감산
+				if c.get('flu_rt', 0) > 20:
+					score *= 0.8
+
 				scored.append({
 					**{k: v for k, v in c.items() if k not in ('rsi_val',)},
 					'score': score,
@@ -182,8 +220,7 @@ class StockSelectorMixin:
 		if len(scored) < stock_count:
 			scored_cds = {s['stk_cd'] for s in scored}
 			eligible   = [s for s in pool if s['stk_cd'] not in scored_cds and s.get('flu_rt', 0) > 0]
-			# 급증 출처(_from_surge) 종목을 앞으로 배치
-			fb_pool = (
+			fb_pool    = (
 				[s for s in eligible if s.get('_from_surge')]
 				+ [s for s in eligible if not s.get('_from_surge')]
 			)
@@ -196,19 +233,23 @@ class StockSelectorMixin:
 				fb_flu_range = (fb_max_flu - fb_min_flu) or 1
 				fb = []
 				for s in fb_pool:
-					volume_norm = math.log(max(s.get('trde_amt', 1), 1)) / math.log(max(fb_max_amt, 2))
-					flu_norm    = (s.get('flu_rt', 0) - fb_min_flu) / fb_flu_range
-					score = volume_norm * 0.6 + flu_norm * 0.4
+					amt_norm = math.log(max(s.get('trde_amt', 1), 1)) / math.log(max(fb_max_amt, 2))
+					flu_norm = (s.get('flu_rt', 0) - fb_min_flu) / fb_flu_range
+					score    = amt_norm * 0.6 + flu_norm * 0.4
+					if s.get('flu_rt', 0) > 20:
+						score *= 0.8
 					fb.append({
 						**s,
 						'trde_amt_rank': amt_rank.get(s['stk_cd'], len(pool)),
 						'score':         score,
 						'strategy':      'MOMENTUM',
+						'speed_5m':      0.0,
+						'vol_power':     50.0,
 					})
 				fb.sort(key=lambda x: x['score'], reverse=True)
 				scored += fb[:stock_count - len(scored)]
 
-		# ── 7. candidate_log 기록 ────────────────────────────────
+		# ── 8. candidate_log 기록 ─────────────────────────────────────
 		if hasattr(self, '_log_candidates'):
 			selected_cds = {s['stk_cd'] for s in scored[:stock_count]}
 			log_entries  = []
