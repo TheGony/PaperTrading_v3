@@ -102,15 +102,16 @@ class ReporterMixin:
 						entry.get('rank', '') or '',
 					])
 
-	def _log_trade(self, stk_nm, stk_cd, pl_rt, reason, mfe=None, mae=None, snapshot=None):
+	def _log_trade(self, stk_nm, stk_cd, pl_rt, reason, mfe=None, mae=None, snapshot=None, net_pl_rt=None):
 		record = {
-			'time':   datetime.datetime.now().strftime('%H:%M:%S'),
-			'stk_nm': stk_nm,
-			'stk_cd': stk_cd,
-			'pl_rt':  pl_rt,
-			'mfe':    mfe,
-			'mae':    mae,
-			'reason': reason,
+			'time':       datetime.datetime.now().strftime('%H:%M:%S'),
+			'stk_nm':     stk_nm,
+			'stk_cd':     stk_cd,
+			'pl_rt':      pl_rt,
+			'net_pl_rt':  net_pl_rt,
+			'mfe':        mfe,
+			'mae':        mae,
+			'reason':     reason,
 		}
 		if snapshot:
 			record.update(snapshot)
@@ -129,7 +130,7 @@ class ReporterMixin:
 		detail_path = os.path.join(self.LOG_DIR, 'trade_detail.csv')
 		expected_header = [
 			'날짜', '시간', '구간', '종목명', '종목코드',
-			'수익률(%)', 'MFE(%)', 'MAE(%)', '매도사유',
+			'수익률(%)', '실질수익률(%)', 'MFE(%)', 'MAE(%)', '매도사유',
 			'진입가', '진입RSI', '진입등락률(%)', '거래량비율',
 			'선정점수', '외인기관', 'KOSPI등락(%)', 'KOSDAQ등락(%)', '전략',
 			'갭(%)', 'ORB손절기준(%)', '보유시간(분)', 'ORB오버슈트(%)', '돌파확인(초)',
@@ -155,9 +156,10 @@ class ReporterMixin:
 		today   = datetime.datetime.now().strftime('%Y%m%d')
 		mfe_str = f"{t['mfe']:+.2f}" if t.get('mfe') is not None else ''
 		mae_str = f"{t['mae']:+.2f}" if t.get('mae') is not None else ''
+		net_str = f"{t['net_pl_rt']:+.2f}" if t.get('net_pl_rt') is not None else ''
 		row = [
 			today, t['time'], t.get('strategy', 'MOMENTUM'), t['stk_nm'], t['stk_cd'],
-			f"{t['pl_rt']:+.2f}", mfe_str, mae_str, t['reason'],
+			f"{t['pl_rt']:+.2f}", net_str, mfe_str, mae_str, t['reason'],
 			t.get('entry_price', ''), t.get('entry_rsi', ''),
 			t.get('entry_flu_rt', ''), t.get('entry_vol_ratio', ''),
 			t.get('entry_score', ''), '○' if t.get('is_foreign') else '×',

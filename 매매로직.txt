@@ -294,30 +294,37 @@
     entry_snapshot.strategy == 'ORB'       → ORB 청산 로직
     entry_snapshot.strategy == 'MOMENTUM'  → MOMENTUM 청산 로직
 
+  실질 수익률 (net_pl_rt):
+    net_pl_rt = pl_rt - SAFETY_MARGIN  (수수료 0.23% + 슬리피지 0.10% = 0.33%)
+    MFE/MAE 추적 및 모든 청산 조건 판단을 net_pl_rt 기준으로 수행
+    → 동일 수치에서 실질적으로 0.33% 먼저 청산되는 효과 (슬리피지/세금 선반영)
+
   ──────────────────────────────────────
   ORB 청산 우선순위 (위일수록 먼저 평가)
   ──────────────────────────────────────
-  순위  조건                                           유형        발동
-  1     진입 후 2분 이내 AND pl_rt < -1.2%             hard stop   즉시 매도
-  2     pl_rt ≤ orb_stop_pct                          hard stop   즉시 매도
+  순위  조건                                                유형        발동
+  1     진입 후 2분 이내 AND net_pl_rt < -1.2%              hard stop   즉시 매도
+  2     net_pl_rt ≤ orb_stop_pct                           hard stop   즉시 매도
         (orb_stop_pct = max(ORB저점기준%, -2.0%))
-  3     peak ≥ 1.5% 도달 후 pl_rt < 0%                soft stop   2회 연속 확인 후 매도
-  4     pl_rt ≤ peak - orb_trailing(peak)             soft stop   2회 연속 확인 후 매도
+  3     net_peak ≥ 1.5% AND net_pl_rt ≤ actual_trigger     soft stop   2회 연속 확인 후 매도
+        actual_trigger = max(net_peak - gap, 0.05)  ← 실질 본절 보존 하한
         orb_trailing(peak) = clamp(1.0 + peak × 0.12,  1.0, 1.8)
-        예) peak=2% → gap=1.24%  peak=5% → gap=1.60%  peak=7% → gap=1.80%(상한)
-  5     pl_rt ≤ -2.0%                                  hard stop   즉시 매도 (최후 안전망)
+        예) peak=2% → gap=1.24% → trigger=max(0.76%, 0.05%)=0.76%
+            trail_gap이 peak보다 커지면 0.05%가 하한선으로 작동 (본절 사수)
+  4     net_pl_rt ≤ -2.0%                                  hard stop   즉시 매도 (최후 안전망)
 
   ──────────────────────────────────────
   MOMENTUM 청산 우선순위
   ──────────────────────────────────────
-  순위  조건                                           유형        발동
-  1     진입 후 2분 이내 AND pl_rt < -1.2%             hard stop   즉시 매도
-  2     pl_rt ≤ peak - momentum_trailing(peak, vol)   soft stop   2회 연속 확인 후 매도
+  순위  조건                                                유형        발동
+  1     진입 후 2분 이내 AND net_pl_rt < -1.2%              hard stop   즉시 매도
+  2     net_peak ≥ 1.5% AND net_pl_rt ≤ actual_trigger     soft stop   2회 연속 확인 후 매도
+        actual_trigger = max(net_peak - gap, -0.5)  ← 하한 -0.5% (소폭 손실까지 허용)
         momentum_trailing = clamp(2.0 + log(1+peak)×0.6 + vol×0.5,  2.0, 3.2)
         vol = market_volatility (KOSPI×0.4 + KOSDAQ×0.6 장중진폭%)
-        예) peak=2%, vol=0.0 → gap=2.54%
-            peak=5%, vol=1.0 → gap=3.20%(상한)
-  3     pl_rt ≤ -3.0%                                  hard stop   즉시 매도 (최후 안전망)
+        예) peak=2%, vol=0.0 → gap=2.54% → trigger=max(-0.54%, -0.5%)=-0.5%
+            peak=5%, vol=1.0 → gap=3.20%(상한) → trigger=max(1.80%, -0.5%)=1.80%
+  3     net_pl_rt ≤ -3.0%                                  hard stop   즉시 매도 (최후 안전망)
 
   ──────────────────────────────────────
   휩쏘 방지 (_sell_signal_count)
@@ -449,8 +456,8 @@
 11. 로그 / 기록 구조
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  trading_logs/trade_detail.csv   매매 건별 누적 (37개 컬럼)
-    날짜, 시간, 구간, 종목명, 종목코드, 수익률, MFE, MAE, 매도사유,
+  trading_logs/trade_detail.csv   매매 건별 누적 (38개 컬럼)
+    날짜, 시간, 구간, 종목명, 종목코드, 수익률, 실질수익률(net), MFE, MAE, 매도사유,
     진입가, RSI, 등락률, 거래량비율, 선정점수, 외인기관, KOSPI/KOSDAQ등락,
     전략, 갭, ORB손절기준, 보유시간, ORB오버슈트, 돌파확인, 돌파강도, 추격비율,
     거래대금, 거래대금순위, 진입시간,
