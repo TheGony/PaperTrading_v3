@@ -74,11 +74,8 @@ class StockSelectorMixin:
 			if not cd:
 				continue
 			if cd in seen:
-				rec = seen[cd]
-				if not rec.get('trde_qty'):
-					rec['trde_qty'] = s.get('trde_qty', 0)
-				if not rec.get('trde_amt'):
-					rec['trde_amt'] = s.get('trde_amt', 0)
+				if not seen[cd].get('trde_qty'):
+					seen[cd]['trde_qty'] = s.get('trde_qty', 0)
 			else:
 				seen[cd] = dict(s, _from_surge=False)
 		for s in (raw_amt or []):
@@ -87,10 +84,8 @@ class StockSelectorMixin:
 				continue
 			if cd not in seen:
 				seen[cd] = dict(s, _from_surge=False, trde_amt=s.get('trde_prica', 0))
-			elif not seen[cd].get('trde_amt'):
-				seen[cd]['trde_amt'] = s.get('trde_prica', 0)
 
-		# ka10030-only 종목: 시간 비례 sdnin_rt 추정
+		# ka10030/ka10032 단독 종목: 시간 비례 sdnin_rt 추정
 		market_open  = datetime.datetime.now().replace(hour=9, minute=0, second=0, microsecond=0)
 		elapsed_mins = max((datetime.datetime.now() - market_open).total_seconds() / 60, 1)
 		time_ratio   = elapsed_mins / 390
