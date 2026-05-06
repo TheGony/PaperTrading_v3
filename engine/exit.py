@@ -107,10 +107,10 @@ class ExitMixin:
 							entry_dt = self.entry_time.get(stk_cd)
 							if entry_dt:
 								elapsed_min = (datetime.datetime.now() - entry_dt).total_seconds() / 60
-								if elapsed_min <= 2.0 and pl_rt < -1.2:
+								if elapsed_min <= 2.0 and pl_rt < -1.5:
 									should_sell = True
 									hard_sell   = True
-									sell_reason = f'조기 손절 (진입 후 {elapsed_min:.1f}분, 수익률 {pl_rt:+.2f}%)'
+									sell_reason = f'조기 손절 (진입 후 {elapsed_min:.1f}분, 수익률 {pl_rt:+.2f}%, 기준 -1.5%)'
 
 							# 2순위: ORB 저점 손절 — hard stop
 							orb_stop_pct = snap.get('orb_stop_pct')
