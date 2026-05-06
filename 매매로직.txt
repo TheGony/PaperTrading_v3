@@ -295,7 +295,7 @@
     entry_snapshot.strategy == 'MOMENTUM'  → MOMENTUM 청산 로직
 
   실질 수익률 (net_pl_rt):
-    net_pl_rt = pl_rt - SAFETY_MARGIN  (수수료 0.23% + 슬리피지 0.10% = 0.33%)
+    net_pl_rt = pl_rt - SAFETY_MARGIN  (수수료 0.23% + 호가스프레드/슬리피지 0.67% = 0.90%)
     MFE/MAE 추적 및 모든 청산 조건 판단을 net_pl_rt 기준으로 수행
     → 동일 수치에서 실질적으로 0.33% 먼저 청산되는 효과 (슬리피지/세금 선반영)
 
@@ -303,7 +303,8 @@
   ORB 청산 우선순위 (위일수록 먼저 평가)
   ──────────────────────────────────────
   순위  조건                                                유형        발동
-  1     진입 후 2분 이내 AND net_pl_rt < -1.2%              hard stop   즉시 매도
+  1     진입 후 2분 이내 AND net_pl_rt < -1.5%              hard stop   즉시 매도
+        (raw 기준 약 -1.17% — 매수 직후 호가 스프레드 오발동 방지)
   2     net_pl_rt ≤ orb_stop_pct                           hard stop   즉시 매도
         (orb_stop_pct = max(ORB저점기준%, -2.0%))
   3     net_peak ≥ 1.5% AND net_pl_rt ≤ actual_trigger     soft stop   2회 연속 확인 후 매도
@@ -317,7 +318,8 @@
   MOMENTUM 청산 우선순위
   ──────────────────────────────────────
   순위  조건                                                유형        발동
-  1     진입 후 2분 이내 AND net_pl_rt < -1.2%              hard stop   즉시 매도
+  1     진입 후 2분 이내 AND net_pl_rt < -1.5%              hard stop   즉시 매도
+        (raw 기준 약 -1.17% — 매수 직후 호가 스프레드 오발동 방지)
   2     net_peak ≥ 1.5% AND net_pl_rt ≤ actual_trigger     soft stop   2회 연속 확인 후 매도
         actual_trigger = max(net_peak - gap, -0.5)  ← 하한 -0.5% (소폭 손실까지 허용)
         momentum_trailing = clamp(2.0 + log(1+peak)×0.6 + vol×0.5,  2.0, 3.2)

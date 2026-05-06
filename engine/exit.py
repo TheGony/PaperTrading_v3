@@ -9,8 +9,8 @@ from util.logger import get_logger
 
 # ── 매매 비용 상수 ────────────────────────────────────────────────────────────
 FEE_TAX       = 0.23   # 증권사 수수료 + 유관기관 + 거래세 합계 (%)
-EST_SLIPPAGE  = 0.10   # 시장가 매도 슬리피지 예상치 (%)
-SAFETY_MARGIN = FEE_TAX + EST_SLIPPAGE  # 0.33% — pl_rt에서 차감하여 net_pl_rt 산출
+EST_SLIPPAGE  = 0.67   # 매수 호가 스프레드 + 슬리피지 (%)
+SAFETY_MARGIN = FEE_TAX + EST_SLIPPAGE  # 0.90% — pl_rt에서 차감하여 net_pl_rt 산출
 
 
 class ExitMixin:
@@ -99,10 +99,10 @@ class ExitMixin:
 							strategy = snap.get('strategy', 'MOMENTUM')
 
 							if strategy == 'ORB':
-								stop_loss = -2.0
+								stop_loss = -2.0   # net 기준 최후 안전망
 								trail_gap = orb_trailing(net_peak)
 							else:
-								stop_loss = -3.0
+								stop_loss = -3.0   # net 기준 최후 안전망
 								trail_gap = momentum_trailing(net_peak, self.market_volatility)
 
 							# ── 청산 우선순위 평가 (net_pl_rt 기준) ─────────────
@@ -110,11 +110,11 @@ class ExitMixin:
 							sell_reason = ''
 							hard_sell   = False
 
-							# 1순위: 조기손절 (net -1.2% / 2분 이내) — hard stop
+							# 1순위: 조기손절 (net -1.5% / 2분 이내) — hard stop
 							entry_dt = self.entry_time.get(stk_cd)
 							if entry_dt:
 								elapsed_min = (datetime.datetime.now() - entry_dt).total_seconds() / 60
-								if elapsed_min <= 2.0 and net_pl_rt < -1.2:
+								if elapsed_min <= 2.0 and net_pl_rt < -1.5:
 									should_sell = True
 									hard_sell   = True
 									sell_reason = f'조기 손절 (진입 후 {elapsed_min:.1f}분, 실질 {net_pl_rt:+.2f}%)'
