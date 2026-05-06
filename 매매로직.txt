@@ -1,6 +1,6 @@
 ================================================================================
   PaperTrading v3 — 매매 로직 정리
-  최종 업데이트: 2026-05-04
+  최종 업데이트: 2026-05-06
 ================================================================================
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -264,7 +264,8 @@
     · 총자산 = 예탁자산평가액 + 주식평가금액
     · kt00004 실패 시: kt00002(추정예탁자산) 또는 last_known_assets 캐시 사용
 
-  매수 금액 = 총자산 × (buy_ratio / 100)
+  매수 비율 = ORB 10% / MOMENTUM 20% (전략별 고정)
+  매수 금액 = 총자산 × 매수 비율
   매수 수량 = int(매수 금액 / 현재가)  ← 수량 0이면 취소
 
 
@@ -294,39 +295,35 @@
     entry_snapshot.strategy == 'ORB'       → ORB 청산 로직
     entry_snapshot.strategy == 'MOMENTUM'  → MOMENTUM 청산 로직
 
-  실질 수익률 (net_pl_rt):
-    net_pl_rt = pl_rt - SAFETY_MARGIN  (수수료 0.23% + 호가스프레드/슬리피지 0.67% = 0.90%)
-    MFE/MAE 추적 및 모든 청산 조건 판단을 net_pl_rt 기준으로 수행
-    → 동일 수치에서 실질적으로 0.33% 먼저 청산되는 효과 (슬리피지/세금 선반영)
+  ※ pl_rt는 실제 체결가(매도호가) 기준 수익률로 매수 스프레드·수수료·거래세를 이미 반영함
+     → 별도 SAFETY_MARGIN 차감 없이 pl_rt 그대로 청산 기준으로 사용
 
   ──────────────────────────────────────
   ORB 청산 우선순위 (위일수록 먼저 평가)
   ──────────────────────────────────────
   순위  조건                                                유형        발동
-  1     진입 후 2분 이내 AND net_pl_rt < -1.5%              hard stop   즉시 매도
-        (raw 기준 약 -1.17% — 매수 직후 호가 스프레드 오발동 방지)
-  2     net_pl_rt ≤ orb_stop_pct                           hard stop   즉시 매도
+  1     진입 후 2분 이내 AND pl_rt < -1.2%                  hard stop   즉시 매도
+  2     pl_rt ≤ orb_stop_pct                               hard stop   즉시 매도
         (orb_stop_pct = max(ORB저점기준%, -2.0%))
-  3     net_peak ≥ 1.5% AND net_pl_rt ≤ actual_trigger     soft stop   2회 연속 확인 후 매도
-        actual_trigger = max(net_peak - gap, 0.05)  ← 실질 본절 보존 하한
+  3     peak ≥ 1.5% AND pl_rt ≤ actual_trigger             soft stop   2회 연속 확인 후 매도
+        actual_trigger = max(peak - gap, 0.05)  ← 본절 보존 하한
         orb_trailing(peak) = clamp(1.0 + peak × 0.12,  1.0, 1.8)
         예) peak=2% → gap=1.24% → trigger=max(0.76%, 0.05%)=0.76%
             trail_gap이 peak보다 커지면 0.05%가 하한선으로 작동 (본절 사수)
-  4     net_pl_rt ≤ -2.0%                                  hard stop   즉시 매도 (최후 안전망)
+  4     pl_rt ≤ -2.0%                                      hard stop   즉시 매도 (최후 안전망)
 
   ──────────────────────────────────────
   MOMENTUM 청산 우선순위
   ──────────────────────────────────────
   순위  조건                                                유형        발동
-  1     진입 후 2분 이내 AND net_pl_rt < -1.5%              hard stop   즉시 매도
-        (raw 기준 약 -1.17% — 매수 직후 호가 스프레드 오발동 방지)
-  2     net_peak ≥ 1.5% AND net_pl_rt ≤ actual_trigger     soft stop   2회 연속 확인 후 매도
-        actual_trigger = max(net_peak - gap, -0.5)  ← 하한 -0.5% (소폭 손실까지 허용)
+  1     진입 후 2분 이내 AND pl_rt < -1.2%                  hard stop   즉시 매도
+  2     peak ≥ 1.5% AND pl_rt ≤ actual_trigger             soft stop   2회 연속 확인 후 매도
+        actual_trigger = max(peak - gap, -0.5)  ← 하한 -0.5% (소폭 손실까지 허용)
         momentum_trailing = clamp(2.0 + log(1+peak)×0.6 + vol×0.5,  2.0, 3.2)
         vol = market_volatility (KOSPI×0.4 + KOSDAQ×0.6 장중진폭%)
         예) peak=2%, vol=0.0 → gap=2.54% → trigger=max(-0.54%, -0.5%)=-0.5%
             peak=5%, vol=1.0 → gap=3.20%(상한) → trigger=max(1.80%, -0.5%)=1.80%
-  3     net_pl_rt ≤ -3.0%                                  hard stop   즉시 매도 (최후 안전망)
+  3     pl_rt ≤ -3.0%                                      hard stop   즉시 매도 (최후 안전망)
 
   ──────────────────────────────────────
   휩쏘 방지 (_sell_signal_count)

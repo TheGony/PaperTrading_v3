@@ -610,11 +610,12 @@ class EntryMixin:
 				total_assets = cash_val + stk_evlt_sum
 				self.last_known_assets = total_assets
 
-			buy_ratio  = get_setting('buy_ratio', 8.0)
+			strategy   = snapshot.get('strategy', 'MOMENTUM') if snapshot else 'MOMENTUM'
+			buy_ratio  = 10.0 if strategy == 'ORB' else 20.0
 			buy_amount = total_assets * (buy_ratio / 100.0)
 			ord_qty    = int(buy_amount / current_price)
 
-			log.info(f'[매수 시도] {stk_cd} | 현재가={current_price:.0f} | 총자산={total_assets:,.0f} | 매수금액={buy_amount:,.0f} | 수량={ord_qty}')
+			log.info(f'[매수 시도] {stk_cd} | 전략={strategy} | buy_ratio={buy_ratio}% | 현재가={current_price:.0f} | 총자산={total_assets:,.0f} | 매수금액={buy_amount:,.0f} | 수량={ord_qty}')
 
 			if ord_qty <= 0:
 				log.warning(f'[매수] {stk_cd} 수량 0 - 매수 취소 (총자산={total_assets:,.0f}, 현재가={current_price:.0f})')
