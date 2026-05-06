@@ -46,20 +46,20 @@ def _institutional_filter(current_price: float, closes: list, highs: list, lows:
     if current_price <= vwap:
         return False, f'VWAP 하회 (현재가 {current_price:.0f} ≤ VWAP {vwap:.0f})', vwap
 
-    # # 2. VWAP 대비 과열 제외 (비활성화 — 체결력 개선)
-    # vwap_gap = (current_price - vwap) / vwap
-    # if vwap_gap > 0.03:
-    #     return False, f'VWAP 과열 ({vwap_gap * 100:.1f}% > 3%)', vwap
+    # 2. VWAP 대비 과열 제외
+    vwap_gap = (current_price - vwap) / vwap
+    if vwap_gap > 0.05:
+        return False, f'VWAP 과열 ({vwap_gap * 100:.1f}% > 5%)', vwap
 
-    # # 3. 최근 5봉 vs 이전 5봉 거래대금 비교 (비활성화 — 체결력 개선)
-    # if len(tv_oldest_first) >= 10:
-    #     recent_tv = sum(tv_oldest_first[-5:])
-    #     prev_tv   = sum(tv_oldest_first[-10:-5])
-    #     if prev_tv > 0 and recent_tv <= prev_tv * 1.2:
-    #         return False, (
-    #             f'거래대금 증가 부족 '
-    #             f'(최근5봉 {recent_tv / 1e6:.0f}M ≤ 이전5봉 {prev_tv / 1e6:.0f}M × 1.2)'
-    #         ), vwap
+    # 3. 최근 5봉 vs 이전 5봉 거래대금 비교
+    if len(tv_oldest_first) >= 10:
+        recent_tv = sum(tv_oldest_first[-5:])
+        prev_tv   = sum(tv_oldest_first[-10:-5])
+        if prev_tv > 0 and recent_tv <= prev_tv * 1.2:
+            return False, (
+                f'거래대금 증가 부족 '
+                f'(최근5봉 {recent_tv / 1e6:.0f}M ≤ 이전5봉 {prev_tv / 1e6:.0f}M × 1.2)'
+            ), vwap
 
     return True, '', vwap
 
@@ -230,15 +230,15 @@ class EntryMixin:
 						continue
 
 					# ── 거래량 필터: 현재 거래량 > 최근 5봉 평균 × 1.3 ─────────
-					curr_vol  = volumes[0] if volumes else 0
-					avg_vol_5 = sum(volumes[1:6]) / len(volumes[1:6]) if len(volumes) > 1 else 0
-					if avg_vol_5 > 0 and curr_vol <= avg_vol_5 * 1.2:
-						print(
-							f"[{datetime.datetime.now().strftime('%H:%M:%S')}] "
-							f"{stk_cd}: 거래량 부족 "
-							f"(현재 {curr_vol:.0f} ≤ 5봉평균 {avg_vol_5:.0f} × 1.3)"
-						)
-						continue
+					# curr_vol  = volumes[0] if volumes else 0
+					# avg_vol_5 = sum(volumes[1:6]) / len(volumes[1:6]) if len(volumes) > 1 else 0
+					# if avg_vol_5 > 0 and curr_vol <= avg_vol_5 * 1.2:
+					# 	print(
+					# 		f"[{datetime.datetime.now().strftime('%H:%M:%S')}] "
+					# 		f"{stk_cd}: 거래량 부족 "
+					# 		f"(현재 {curr_vol:.0f} ≤ 5봉평균 {avg_vol_5:.0f} × 1.3)"
+					# 	)
+					# 	continue
 
 					# ── VWAP + 기관 수급 필터 ────────────────────────────────
 					passed, reason, vwap = _institutional_filter(
@@ -503,14 +503,14 @@ class EntryMixin:
 			return False
 
 		curr_vol  = volumes[0] if volumes else 0
-		prev_vol  = volumes[1] if len(volumes) > 1 else 0
-		vol_ratio = curr_vol / prev_vol if prev_vol > 0 else 0
-		if prev_vol == 0 or curr_vol < prev_vol * 1.5:
-			log.info(f'[ORB] {stk_cd} 진입 거절: 거래량 미달 (현재={curr_vol:.0f}, 직전={prev_vol:.0f}, {vol_ratio:.2f}x)')
+		avg_vol_5 = sum(volumes[1:6]) / len(volumes[1:6]) if len(volumes) > 1 else 0
+		vol_ratio = curr_vol / avg_vol_5 if avg_vol_5 > 0 else 0
+		if avg_vol_5 == 0 or curr_vol < avg_vol_5 * 1.3:
+			log.info(f'[ORB] {stk_cd} 진입 거절: 거래량 미달 (현재={curr_vol:.0f}, 5봉평균={avg_vol_5:.0f}, {vol_ratio:.2f}x)')
 			return False
 
-		if rsi is None or rsi < 50 or rsi > 85:
-			log.info(f'[ORB] {stk_cd} 진입 거절: RSI 범위 이탈 (RSI={rsi_str}, 범위: 50<=x<=85)')
+		if rsi is None or rsi < 50 or rsi > 90:
+			log.info(f'[ORB] {stk_cd} 진입 거절: RSI 범위 이탈 (RSI={rsi_str}, 범위: 50<=x<=90)')
 			return False
 
 		orb_max = get_setting('orb_max_count', 5)
@@ -546,7 +546,7 @@ class EntryMixin:
 			'entry_price':     current_price,
 			'entry_rsi':       round(rsi, 2) if rsi is not None else None,
 			'entry_flu_rt':    meta.get('flu_rt', 0),
-			'entry_vol_ratio': round(curr_vol / prev_vol, 2) if prev_vol > 0 else None,
+			'entry_vol_ratio': round(vol_ratio, 2) if avg_vol_5 > 0 else None,
 			'entry_score':     round(meta.get('score', 0), 4),
 			'is_foreign':      meta.get('is_foreign', False),
 			'kospi_flu':       kospi_flu,
@@ -564,7 +564,7 @@ class EntryMixin:
 		signal_info = (
 			f"📈 [ORB] 개장범위 돌파 확인: {stk_cd}\n"
 			f"   현재가: {current_price:.0f} > ORB 고점: {orb_high:.0f} (+{orb_overshoot:.2f}%)\n"
-			f"   갭: {orb_gap:.1f}% | RSI: {rsi_str} | 거래량비율: {vol_ratio:.1f}x | 손절: {orb_stop_pct:+.2f}%"
+			f"   갭: {orb_gap:.1f}% | RSI: {rsi_str} | 거래량비율(5봉평균): {vol_ratio:.1f}x | 손절: {orb_stop_pct:+.2f}%"
 		)
 		bought = await self._buy_stock(stk_cd, current_price, signal_info=signal_info, snapshot=snapshot, acnt_cache=acnt_cache)
 		if bought:
