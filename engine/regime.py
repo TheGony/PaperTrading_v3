@@ -90,4 +90,4 @@ class RegimeMixin:
 			except Exception as e:
 				log.warning(f'[Regime] 갱신 오류: {e}')
 
-			await asyncio.sleep(300)  # 5분
+			await asyncio.sleep(900)  # 15분
