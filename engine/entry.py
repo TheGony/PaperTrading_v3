@@ -229,16 +229,9 @@ class EntryMixin:
 						print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {stk_cd} 탈락: 돌파 미발생 (현재가 {current_price:.0f} ≤ 고점 {breakout_high:.0f})")
 						continue
 
-					# ── 거래량 필터: 현재 거래량 > 최근 5봉 평균 × 1.3 ─────────
-					# curr_vol  = volumes[0] if volumes else 0
-					# avg_vol_5 = sum(volumes[1:6]) / len(volumes[1:6]) if len(volumes) > 1 else 0
-					# if avg_vol_5 > 0 and curr_vol <= avg_vol_5 * 1.2:
-					# 	print(
-					# 		f"[{datetime.datetime.now().strftime('%H:%M:%S')}] "
-					# 		f"{stk_cd}: 거래량 부족 "
-					# 		f"(현재 {curr_vol:.0f} ≤ 5봉평균 {avg_vol_5:.0f} × 1.3)"
-					# 	)
-					# 	continue
+					# ── 거래량 계산 (snapshot 기록용, 필터 비활성화) ─────────
+					curr_vol  = volumes[0] if volumes else 0
+					avg_vol_5 = sum(volumes[1:6]) / len(volumes[1:6]) if len(volumes) > 1 else 0
 
 					# ── VWAP + 기관 수급 필터 ────────────────────────────────
 					passed, reason, vwap = _institutional_filter(
@@ -564,7 +557,8 @@ class EntryMixin:
 		signal_info = (
 			f"📈 [ORB] 개장범위 돌파 확인: {stk_cd}\n"
 			f"   현재가: {current_price:.0f} > ORB 고점: {orb_high:.0f} (+{orb_overshoot:.2f}%)\n"
-			f"   갭: {orb_gap:.1f}% | RSI: {rsi_str} | 거래량비율(5봉평균): {vol_ratio:.1f}x | 손절: {orb_stop_pct:+.2f}%"
+			f"   갭: {orb_gap:.1f}% | RSI: {rsi_str} | 거래량비율(5봉평균): {vol_ratio:.1f}x | 손절: {orb_stop_pct:+.2f}%" if orb_gap is not None else
+		f"   갭: N/A | RSI: {rsi_str} | 거래량비율(5봉평균): {vol_ratio:.1f}x | 손절: {orb_stop_pct:+.2f}%"
 		)
 		bought = await self._buy_stock(stk_cd, current_price, signal_info=signal_info, snapshot=snapshot, acnt_cache=acnt_cache)
 		if bought:
