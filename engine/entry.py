@@ -1,6 +1,6 @@
 ﻿import asyncio
 import datetime
-from api.chart import fn_ka10080, fn_ka10080_full
+from api.chart import fn_ka10080
 from api.account import fn_kt00004, fn_kt00001, fn_kt00002
 from api.order import fn_kt10000
 from api.market import fn_ka10001, fn_get_market_index
@@ -112,9 +112,9 @@ class EntryMixin:
 					continue
 				held_stock_codes = [stock['stk_cd'].replace('A', '') for stock in my_stocks]
 
-				# ── 루프 전 1회: ORB 윈도우 시간 체크 ──────────────────────
+				# ── 루프 전 1회: ORB 윈도우 시간 체크 (09:04~09:30) ────────
 				now_time   = datetime.datetime.now().time()
-				orb_window = self.orb_ready and now_time <= datetime.time(9, 30)
+				orb_window = self.orb_ready and datetime.time(9, 4) <= now_time <= datetime.time(9, 30)
 
 				# ORB 후보는 진입 윈도우 내에서만 포함
 				orb_codes  = {s['stk_cd'] for s in self.orb_candidates} if orb_window else set()
@@ -425,45 +425,10 @@ class EntryMixin:
 		"""ORB(Opening Range Breakout) 진입 시도. 성공 시 True 반환"""
 		log = get_logger()
 
-		# ORB 범위 확립: 선정 시 캐시 우선 → 없을 경우 API 재조회 (fallback)
+		# 09:03 선정 시 사전 캐싱된 데이터만 사용 — API 재조회 없음
 		if stk_cd not in self.orb_data:
-			cand = next((c for c in self.orb_candidates if c['stk_cd'] == stk_cd), None)
-			if cand and cand.get('orb_high') is not None and cand.get('orb_candle_n', 0) >= 5:
-				self.orb_data[stk_cd] = {
-					'high':     cand['orb_high'],
-					'low':      cand['orb_low'],
-					'gap_up':   cand['gap_up'],
-					'day_open': cand['day_open'],
-				}
-				log.info(f'[ORB] {stk_cd} 범위: 선정 캐시 활용 high={cand["orb_high"]:.0f}')
-			else:
-				# fallback: API 재조회
-				candles = await asyncio.get_event_loop().run_in_executor(
-					None, fn_ka10080_full, stk_cd, 30, 'N', '', self.token
-				)
-				def _hhmm(t):
-					t = str(t).strip()
-					return t[8:12] if len(t) >= 14 else t[0:4]
-
-				orb_candles = [c for c in candles if '0900' <= _hhmm(c['cntr_tm']) <= '0904']
-				if len(orb_candles) < 5:
-					log.info(f'[ORB] {stk_cd} 범위 미확립: 09:00~09:04 봉 {len(orb_candles)}개 (5개 미만)')
-					return False
-
-				orb_high_v = max(c['high_pric'] for c in orb_candles)
-				orb_low_v  = min(c['low_pric']  for c in orb_candles)
-				first      = orb_candles[-1]
-				prev_close = first['cur_prc'] - first['pred_pre']
-				gap_up_v   = (first['open_pric'] > prev_close) if prev_close > 0 else False
-				day_open_v = first['open_pric']
-
-				self.orb_data[stk_cd] = {
-					'high':     orb_high_v,
-					'low':      orb_low_v,
-					'gap_up':   gap_up_v,
-					'day_open': day_open_v,
-				}
-				log.info(f'[ORB] {stk_cd} 범위 재조회: high={orb_high_v:.0f} low={orb_low_v:.0f}')
+			log.info(f'[ORB] {stk_cd} orb_data 없음 — 진입 거절')
+			return False
 
 		orb      = self.orb_data[stk_cd]
 		orb_high = orb['high']
@@ -480,7 +445,12 @@ class EntryMixin:
 				log.info(f'[ORB] {stk_cd} 진입 거절: 갭 마이너스 구간 시가 미회복 (현재가={current_price:.0f} < 시가={day_open:.0f})')
 				return False
 
-		# price_position 재검증: 선정 당시 고점 대비 많이 밀린 종목 진입 차단
+		# 시가 대비 7% 이상 과열 차단
+		if day_open > 0 and current_price > day_open * 1.07:
+			log.info(f'[ORB] {stk_cd} 진입 거절: 시가 대비 과열 (현재가={current_price:.0f} > 시가*1.07={day_open*1.07:.0f})')
+			return False
+
+		# price_position 재검증: 선정 당시 3분봉 고점 대비 많이 밀린 종목 진입 차단
 		cand_meta = next((c for c in self.orb_candidates if c['stk_cd'] == stk_cd), None)
 		if cand_meta:
 			price_pos = cand_meta.get('price_position', 1.0)
@@ -491,15 +461,16 @@ class EntryMixin:
 		if current_price <= orb_high:
 			log.info(f'[ORB] {stk_cd} 진입 거절: 현재가({current_price:.0f}) <= ORB고점({orb_high:.0f})')
 			return False
-		if current_price > orb_high * 1.01:
-			log.info(f'[ORB] {stk_cd} 진입 거절: 추격매수 방지 (현재가={current_price:.0f} > ORB고점*1.01={orb_high*1.01:.0f})')
+		if current_price > orb_high * 1.025:
+			log.info(f'[ORB] {stk_cd} 진입 거절: 추격매수 방지 (현재가={current_price:.0f} > ORB고점*1.025={orb_high*1.025:.0f})')
 			return False
 
-		curr_vol  = volumes[0] if volumes else 0
-		avg_vol_5 = sum(volumes[1:6]) / len(volumes[1:6]) if len(volumes) > 1 else 0
-		vol_ratio = curr_vol / avg_vol_5 if avg_vol_5 > 0 else 0
-		if avg_vol_5 == 0 or curr_vol < avg_vol_5 * 1.3:
-			log.info(f'[ORB] {stk_cd} 진입 거절: 거래량 미달 (현재={curr_vol:.0f}, 5봉평균={avg_vol_5:.0f}, {vol_ratio:.2f}x)')
+		# 거래량 필터: 진입 봉 거래량 > ORB 구간(09:00~09:02) 평균 × 1.1
+		orb_avg_vol = orb.get('orb_avg_vol', 0)
+		curr_vol    = volumes[0] if volumes else 0
+		vol_ratio   = curr_vol / orb_avg_vol if orb_avg_vol > 0 else 0
+		if orb_avg_vol == 0 or curr_vol < orb_avg_vol * 1.1:
+			log.info(f'[ORB] {stk_cd} 진입 거절: 거래량 미달 (현재={curr_vol:.0f}, ORB평균={orb_avg_vol:.0f}, {vol_ratio:.2f}x)')
 			return False
 
 		if rsi is None or rsi < 50 or rsi > 90:
@@ -525,9 +496,6 @@ class EntryMixin:
 		# 진입 오버슈트: 진입가가 ORB 고점 대비 얼마나 위인지
 		orb_overshoot = round((current_price / orb_high - 1) * 100, 2)
 
-		# 선정 시 갭%
-		orb_gap = next((c['gap'] for c in self.orb_candidates if c['stk_cd'] == stk_cd), None)
-
 		meta = self.selected_stocks_meta.get(stk_cd, {})
 		if mkt is not None:
 			kospi_flu, kosdaq_flu = mkt
@@ -539,7 +507,7 @@ class EntryMixin:
 			'entry_price':     current_price,
 			'entry_rsi':       round(rsi, 2) if rsi is not None else None,
 			'entry_flu_rt':    meta.get('flu_rt', 0),
-			'entry_vol_ratio': round(vol_ratio, 2) if avg_vol_5 > 0 else None,
+			'entry_vol_ratio': round(vol_ratio, 2) if orb_avg_vol > 0 else None,
 			'entry_score':     round(meta.get('score', 0), 4),
 			'is_foreign':      meta.get('is_foreign', False),
 			'kospi_flu':       kospi_flu,
@@ -554,11 +522,11 @@ class EntryMixin:
 		if not await self._confirm_breakout(stk_cd, orb_high, 1.0):
 			return False
 
+		gap_str     = f"{orb_gap:.1f}%" if orb_gap is not None else "N/A"
 		signal_info = (
 			f"📈 [ORB] 개장범위 돌파 확인: {stk_cd}\n"
 			f"   현재가: {current_price:.0f} > ORB 고점: {orb_high:.0f} (+{orb_overshoot:.2f}%)\n"
-			f"   갭: {orb_gap:.1f}% | RSI: {rsi_str} | 거래량비율(5봉평균): {vol_ratio:.1f}x | 손절: {orb_stop_pct:+.2f}%" if orb_gap is not None else
-		f"   갭: N/A | RSI: {rsi_str} | 거래량비율(5봉평균): {vol_ratio:.1f}x | 손절: {orb_stop_pct:+.2f}%"
+			f"   갭: {gap_str} | RSI: {rsi_str} | 거래량비율(ORB평균): {vol_ratio:.1f}x | 손절: {orb_stop_pct:+.2f}%"
 		)
 		bought = await self._buy_stock(stk_cd, current_price, signal_info=signal_info, snapshot=snapshot, acnt_cache=acnt_cache)
 		if bought:

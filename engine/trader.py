@@ -23,8 +23,8 @@ class TraderMixin:
 			# ── 초기화 단계 (단 한 번 실행) ─────────────────────────
 			await self._wait_for_market_start()
 
-			# ORB 1차 선정 (09:05 — 09:00~09:04 Range 5봉 확립 후)
-			while datetime.datetime.now().time() < datetime.time(9, 5):
+			# ORB 1차 선정 (09:03 — 09:00~09:02 Range 3봉 확립 후)
+			while datetime.datetime.now().time() < datetime.time(9, 3):
 				await asyncio.sleep(1)
 
 			if datetime.datetime.now().time() <= datetime.time(9, 30):
@@ -33,9 +33,8 @@ class TraderMixin:
 				self.orb_ready = True
 
 				async def _deferred_init():
-					while datetime.datetime.now().time() < datetime.time(9, 10):
+					while datetime.datetime.now().time() < datetime.time(9, 5):
 						await asyncio.sleep(1)
-					await self._add_orb_newcomers()
 					await self._select_initial_stocks()
 
 				self.deferred_init_task = asyncio.create_task(_deferred_init())
